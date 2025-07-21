@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id, action_id, action_type , path, b3sum, size, metadata\n            FROM history \n            WHERE action_id = ?1\n            ORDER BY id ASC\n            ",
+  "query": "\n                    SELECT id, action_id, action_type, path, b3sum, size, metadata\n                    FROM history\n                    WHERE action_type = ?1\n                    LIMIT ?2\n                    ",
   "describe": {
     "columns": [
       {
@@ -40,7 +40,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 2
     },
     "nullable": [
       false,
@@ -52,5 +52,5 @@
       true
     ]
   },
-  "hash": "3c6ee6ceea58741916efbd4f61d4bc9c5f2b67d5bbb73ccb03fe0a8dcfaee777"
+  "hash": "d13c21db78edf365b9d4eb65e58f03fcd0b3dd48ecaa4e68b4700909a84ded7e"
 }

@@ -1,6 +1,4 @@
-use crate::{
-    AppContext, Result, config::Config, database::ActionType, duplicates::DuplicatesCommand,
-};
+use crate::{AppContext, Result, cli::dedup::DedupCommand, config::Config, database::ActionType};
 use tracing::info;
 
 pub struct PruneCommand<'a> {
@@ -10,10 +8,7 @@ pub struct PruneCommand<'a> {
 #[derive(Debug, Default)]
 pub struct PruneResult {
     pub duplicates_processed: usize,
-    pub duplicates_deleted: usize,
-    pub duplicates_hardlinked: usize,
     pub pruned_backups: usize,
-    pub new_deletions_tracked: usize,
 }
 
 impl<'a> PruneCommand<'a> {
@@ -21,7 +16,7 @@ impl<'a> PruneCommand<'a> {
         Self { context }
     }
 
-    pub async fn execute(&self) -> Result<()> {
+    pub async fn execute(&self) -> Result<PruneResult> {
         let config = Config::load(&self.context.repo_root)?;
         let old_deleted_history_entry = self
             .context
@@ -30,14 +25,20 @@ impl<'a> PruneCommand<'a> {
             .await?;
         info!("Pruned {old_deleted_history_entry} old history entries for deleted files.");
 
-        let duplicates_command = DuplicatesCommand::new(self.context);
-        let duplicate_groups = duplicates_command.execute().await?;
+        let dedup_command = DedupCommand::new(self.context);
+        let duplicate_groups = dedup_command.execute().await?;
         if !duplicate_groups.is_empty() {
             info!(
                 "Found {} duplicate groups. Use 'ddrive dedup' command to handle them.",
                 duplicate_groups.len()
             );
         }
-        Ok(())
+
+        let result = PruneResult {
+            pruned_backups: old_deleted_history_entry,
+            duplicates_processed: duplicate_groups.len(),
+        };
+
+        Ok(result)
     }
 }

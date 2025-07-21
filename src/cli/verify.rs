@@ -12,7 +12,6 @@ pub struct VerifyCommand<'a> {
 
 #[derive(Debug)]
 pub struct VerifyResult {
-    pub total_files: usize,
     pub checked_files: usize,
     pub passed_files: usize,
     pub failed_files: usize,
@@ -52,7 +51,6 @@ impl<'a> VerifyCommand<'a> {
         if files_to_check.is_empty() {
             info!("No files need verification at this time");
             return Ok(VerifyResult {
-                total_files: 0,
                 checked_files: 0,
                 passed_files: 0,
                 failed_files: 0,
@@ -64,7 +62,6 @@ impl<'a> VerifyCommand<'a> {
         info!("Verifying {} files", files_to_check.len());
 
         let mut result = VerifyResult {
-            total_files: files_to_check.len(),
             checked_files: 0,
             passed_files: 0,
             failed_files: 0,

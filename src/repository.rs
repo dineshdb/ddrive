@@ -1,44 +1,45 @@
 use crate::ignore::DEFAULT_IGNORE_PATTERNS;
 use crate::{DdriveError, Result};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
 #[derive(Default)]
-pub struct RepositoryFinder;
+pub struct Repository {
+    repo_root: PathBuf,
+}
 
-impl RepositoryFinder {
-    pub fn new() -> Self {
-        RepositoryFinder
+impl Repository {
+    pub fn get_repo_root(&self) -> &PathBuf {
+        &self.repo_root
     }
 
-    /// Search for .ddrive/metadata.sqlite3 in current and parent directories
-    pub fn find_repository(&self) -> Result<Option<PathBuf>> {
-        let current_dir = env::current_dir()?;
-        let mut search_path = current_dir.as_path();
-
+    /// Search for .ddrive/metadata.sqlite3 in given and parent directories
+    pub fn find_repository(path: PathBuf) -> Result<Repository> {
+        let mut search_path = path.as_path().canonicalize()?;
         loop {
             let ddrive_path = search_path.join(".ddrive");
             let db_path = ddrive_path.join("metadata.sqlite3");
 
             if db_path.exists() && db_path.is_file() {
-                return Ok(Some(search_path.to_path_buf()));
+                return Ok(Repository {
+                    repo_root: search_path.to_path_buf().canonicalize()?,
+                });
             }
 
             // Move to parent directory
             match search_path.parent() {
-                Some(parent) => search_path = parent,
+                Some(parent) => search_path = parent.into(),
                 None => break, // Reached filesystem root
             }
         }
 
-        Ok(None)
+        Err(DdriveError::InvalidDirectory)
     }
 
     /// Validate that the repository has a valid database structure
-    pub fn validate_repository<P: AsRef<Path>>(&self, repo_path: P) -> Result<bool> {
-        let repo_path = repo_path.as_ref();
+    pub fn is_valid(&self) -> Result<bool> {
+        let repo_path = self.repo_root.as_path();
         let ddrive_path = repo_path.join(".ddrive");
         let db_path = ddrive_path.join("metadata.sqlite3");
 
@@ -62,77 +63,47 @@ impl RepositoryFinder {
         }
     }
 
-    /// Ensure repository exists and return its root path
-    pub fn ensure_repository_exists(&self) -> Result<PathBuf> {
-        debug!("Searching for ddrive repository...");
-
-        match self.find_repository()? {
-            Some(repo_path) => {
-                debug!("Found repository at: {}", repo_path.display());
-                if self.validate_repository(&repo_path)? {
-                    Ok(repo_path)
-                } else {
-                    Err(DdriveError::Repository {
-                        message:
-                            "Found repository directory but database is invalid or inaccessible."
-                                .to_string(),
-                    })
-                }
-            }
-            None => Err(DdriveError::Repository {
-                message: "No ddrive repository found.".to_string(),
-            }),
-        }
-    }
-
     /// Initialize a new ddrive repository in the current working directory
-    pub async fn init_repository(&self) -> Result<()> {
-        let current_dir = env::current_dir()?;
-        let ddrive_path = current_dir.join(".ddrive");
+    pub async fn init_repository(repo_root: PathBuf) -> Result<Repository> {
+        let ddrive_path = repo_root.join(".ddrive");
+        let objects_dir = ddrive_path.join("objects");
         let db_path = ddrive_path.join("metadata.sqlite3");
+        let ignore_file = ddrive_path.join("ignore");
+        let repo = Repository { repo_root };
 
-        if ddrive_path.exists() && self.validate_repository(&current_dir)? {
+        if ddrive_path.exists() && repo.is_valid()? {
             info!("Repository already initialized");
-            return Ok(());
+            return Ok(repo);
         }
 
         fs::create_dir_all(&ddrive_path)?;
-
-        // Create objects directory structure
-        let objects_dir = ddrive_path.join("objects");
         fs::create_dir_all(&objects_dir)?;
 
         debug!("Creating database and running migrations");
-        self.create_database(&db_path).await?;
+        repo.init_database(&db_path).await?;
 
         // Create default ignore file
-        let ignore_file = ddrive_path.join("ignore");
         if !ignore_file.exists() {
             debug!("Creating default ignore file");
             fs::write(&ignore_file, DEFAULT_IGNORE_PATTERNS)?;
         }
 
         info!("Repository initialized successfully");
-        Ok(())
+        Ok(repo)
     }
 
     /// Create the SQLite database with proper schema using sqlx migrations
-    async fn create_database(&self, db_path: &Path) -> Result<()> {
+    async fn init_database(&self, db_path: &Path) -> Result<()> {
         // Create the database file if it doesn't exist
         if !db_path.exists() {
             std::fs::File::create(db_path)?;
         }
 
-        // Connect to the database and run migrations using sqlx
         let database_url = format!("sqlite://{}", db_path.display());
         let pool = sqlx::SqlitePool::connect(&database_url).await?;
 
-        // Run migrations to set up the schema
         sqlx::migrate!("./migrations").run(&pool).await?;
-
-        // Close the connection
         pool.close().await;
-
         Ok(())
     }
 }

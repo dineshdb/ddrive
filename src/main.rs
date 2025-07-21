@@ -1,4 +1,5 @@
-use ddrive::cli::{parse_args, run_command};
+use clap::Parser;
+use ddrive::cli::{Cli, run_command};
 use tracing::error;
 use tracing_subscriber::{self, EnvFilter};
 
@@ -15,8 +16,7 @@ async fn main() {
         .with_target(false)
         .init();
 
-    let cli = parse_args();
-
+    let cli = Cli::parse();
     if let Err(e) = run_command(cli).await {
         let exit_code = e.exit_code();
         error!("error: {}", e);

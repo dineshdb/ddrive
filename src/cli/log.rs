@@ -31,24 +31,6 @@ impl<'a> HistoryManager<'a> {
         Self { context }
     }
 
-    /// Record a new history action affecting multiple files
-    pub async fn record_action(
-        &self,
-        action_type: ActionType,
-        file_entries: &[(String, Option<String>, Option<i64>)], // (file_path, file_b3sum)
-        metadata: Option<JsonValue>,
-    ) -> Result<String> {
-        let action_id = self.generate_id();
-
-        // Insert history entries for all affected files
-        self.context
-            .database
-            .insert_history_entries(action_id, action_type, file_entries, metadata)
-            .await?;
-
-        Ok(bs58::encode(action_id.to_be_bytes()).into_string())
-    }
-
     /// List history entries, optionally filtered by action type
     pub async fn list_history(
         &self,
@@ -70,10 +52,6 @@ impl<'a> HistoryManager<'a> {
             .database
             .get_history_entries_by_action_id_base58(action_id_base58)
             .await
-    }
-
-    fn generate_id(&self) -> i64 {
-        Utc::now().timestamp()
     }
 }
 

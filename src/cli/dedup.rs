@@ -2,7 +2,7 @@ use crate::{AppContext, Result, database::FileRecord, utils};
 use std::collections::HashMap;
 use tracing::info;
 
-pub struct DuplicatesCommand<'a> {
+pub struct DedupCommand<'a> {
     context: &'a AppContext,
 }
 
@@ -13,7 +13,7 @@ pub struct DuplicateGroup {
     pub file_size: i64,
 }
 
-impl<'a> DuplicatesCommand<'a> {
+impl<'a> DedupCommand<'a> {
     pub fn new(context: &'a AppContext) -> Self {
         Self { context }
     }

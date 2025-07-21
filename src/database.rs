@@ -111,57 +111,18 @@ impl Database {
             .execute(&mut *tx)
             .await?;
 
-            // Create a new query for each record
+            // Insert into files table
             sqlx::query(
                 r#"
                 INSERT INTO files (path, b3sum, size, created_at, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 "#,
             )
-            .bind(relative_path)
-            .bind(b3sum)
-            .bind(file_size)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await?;
-        Ok(())
-    }
-
-    pub async fn batch_delete_file_records(
-        &self,
-        action_id: i64,
-        records: &[(String, String, i64)], // (file_path, b3sum, file_size)
-    ) -> Result<()> {
-        if records.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = self.pool.begin().await?;
-        for (file_path, b3sum, file_size) in records {
-            let relative_path = self.convert_to_relative_path(file_path)?;
-
-            // Insert into history for tracking
-            sqlx::query(
-                r#"
-             INSERT INTO history (action_id, action_type, path, b3sum, size)
-                VALUES (?, ?, ?, ?, ?)
-            "#,
-            )
-            .bind(action_id)
-            .bind(ActionType::Delete.to_i32())
             .bind(&relative_path)
             .bind(b3sum)
             .bind(file_size)
             .execute(&mut *tx)
             .await?;
-
-            // Create a new query for each record
-            sqlx::query("DELETE FROM files WHERE path = ? ")
-                .bind(relative_path)
-                .execute(&mut *tx)
-                .await?;
         }
 
         tx.commit().await?;
@@ -185,9 +146,9 @@ impl Database {
             // Insert into history for tracking
             sqlx::query(
                 r#"
-             INSERT INTO history (action_id, action_type, path, b3sum, size, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-            "#,
+                INSERT INTO history (action_id, action_type, path, b3sum, size)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
             )
             .bind(action_id)
             .bind(ActionType::Update.to_i32())
@@ -197,17 +158,17 @@ impl Database {
             .execute(&mut *tx)
             .await?;
 
-            // Create a new query for each record
+            // Update files table
             sqlx::query(
                 r#"
                 UPDATE files 
-                SET b3sum = ?, size = ?, updated_at = CURRENT_TIMESTAMP, last_checked = NULL
-                WHERE path = ?
+                SET b3sum = ?1, size = ?2, updated_at = CURRENT_TIMESTAMP
+                WHERE path = ?3
                 "#,
             )
             .bind(b3sum)
             .bind(file_size)
-            .bind(relative_path)
+            .bind(&relative_path)
             .execute(&mut *tx)
             .await?;
         }
@@ -216,21 +177,47 @@ impl Database {
         Ok(())
     }
 
-    /// Check if a file already exists in the database using relative path
-    pub async fn check_file_exists(&self, file_path: &str) -> Result<bool> {
-        let relative_path = self.convert_to_relative_path(file_path)?;
+    /// Batch delete file records in a single transaction
+    pub async fn batch_delete_file_records(
+        &self,
+        action_id: i64,
+        records: &[(String, String, i64)], // (file_path, b3sum, file_size)
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
 
-        let result = sqlx::query!(
-            "SELECT COUNT(*) as count FROM files WHERE path = ?1",
-            relative_path
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let mut tx = self.pool.begin().await?;
+        for (file_path, b3sum, file_size) in records {
+            let relative_path = self.convert_to_relative_path(file_path)?;
 
-        Ok(result.count > 0)
+            // Insert into history for tracking
+            sqlx::query(
+                r#"
+                INSERT INTO history (action_id, action_type, path, b3sum, size)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+            )
+            .bind(action_id)
+            .bind(ActionType::Delete.to_i32())
+            .bind(&relative_path)
+            .bind(b3sum)
+            .bind(file_size)
+            .execute(&mut *tx)
+            .await?;
+
+            // Delete from files table
+            sqlx::query("DELETE FROM files WHERE path = ?1")
+                .bind(&relative_path)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
     }
 
-    /// Get file record for comparison using relative path
+    /// Get a file record by path
     pub async fn get_file_by_path(&self, file_path: &str) -> Result<Option<FileRecord>> {
         let relative_path = self.convert_to_relative_path(file_path)?;
 
@@ -249,53 +236,16 @@ impl Database {
         Ok(record)
     }
 
-    /// Convert absolute file paths to paths relative to repository root
-    pub fn convert_to_relative_path(&self, file_path: &str) -> Result<String> {
-        let file_path = Path::new(file_path);
-        let absolute_path = if file_path.is_absolute() {
-            file_path.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(file_path)
-        };
-
-        let relative_path =
-            absolute_path
-                .strip_prefix(&self.repo_root)
-                .map_err(|_| DdriveError::Validation {
-                    message: format!(
-                        "File path {} is not within repository root {}",
-                        absolute_path.display(),
-                        self.repo_root.display()
-                    ),
-                })?;
-
-        // Convert to string efficiently
-        Ok(relative_path.to_string_lossy().into_owned())
-    }
-
-    /// Query files that need checking (last_checked > 1 month or null)
-    pub async fn get_files_for_check(&self) -> Result<Vec<FileRecord>> {
-        let records = sqlx::query_as!(
-            FileRecord,
-            r#"
-            SELECT id, path, created_at, updated_at, last_checked, b3sum, size as "size: i64"
-            FROM files 
-            WHERE (last_checked IS NULL OR last_checked < datetime('now', '-1 month'))
-            ORDER BY path
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(records)
-    }
-
-    /// Update last_checked timestamp after successful verification
+    /// Update the last_checked timestamp for a file
     pub async fn update_last_checked(&self, file_path: &str) -> Result<()> {
         let relative_path = self.convert_to_relative_path(file_path)?;
 
         sqlx::query!(
-            "UPDATE files SET last_checked = CURRENT_TIMESTAMP WHERE path = ?1",
+            r#"
+            UPDATE files 
+            SET last_checked = CURRENT_TIMESTAMP
+            WHERE path = ?1
+            "#,
             relative_path
         )
         .execute(&self.pool)
@@ -371,6 +321,24 @@ impl Database {
         Ok(records)
     }
 
+    /// Get files that match a path prefix
+    pub async fn get_files_by_path_prefix(&self, path_prefix: &str) -> Result<Vec<FileRecord>> {
+        let records = sqlx::query_as!(
+            FileRecord,
+            r#"
+            SELECT id, path, created_at, updated_at, last_checked, b3sum, size
+            FROM files 
+            WHERE path LIKE ?1 || '%'
+            ORDER BY path
+            "#,
+            path_prefix
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(records)
+    }
+
     /// Get files that haven't been checked since a specific date
     pub async fn get_files_not_checked_since(
         &self,
@@ -403,114 +371,7 @@ impl Database {
         Ok(action_id)
     }
 
-    /// Rename a file record in the database (for tracking file renames)
-    pub async fn rename_file_record(&self, old_path: &str, new_path: &str) -> Result<()> {
-        let old_relative_path = self.convert_to_relative_path(old_path)?;
-        let new_relative_path = self.convert_to_relative_path(new_path)?;
-
-        sqlx::query!(
-            r#"
-            UPDATE files
-            SET path = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE path = ?
-            "#,
-            new_relative_path,
-            old_relative_path
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Find deleted files by comparing database records with history
-    pub async fn find_deleted_files(&self) -> Result<Vec<String>> {
-        // Get all files that have a delete action in history but still exist in files table
-        let deleted_paths = sqlx::query!(
-            r#"
-            SELECT DISTINCT h.path
-            FROM history h
-            JOIN files f ON h.path = f.path
-            WHERE h.action_type = ?
-            "#,
-            ActionType::Delete as i32
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(deleted_paths.into_iter().map(|r| r.path).collect())
-    }
-
-    /// Get files that were deleted before a specific date based on history
-    pub async fn get_files_deleted_before(
-        &self,
-        cutoff_date: chrono::NaiveDateTime,
-    ) -> Result<Vec<String>> {
-        let deleted_paths = sqlx::query!(
-            r#"
-            SELECT h.path
-            FROM history h
-            WHERE h.action_type = ?
-            AND action_id < ?
-            "#,
-            ActionType::Delete as i32,
-            cutoff_date
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(deleted_paths.into_iter().map(|r| r.path).collect())
-    }
-
-    /// Get only file paths and basic info for status checks (lightweight)
-    pub async fn get_tracked_file_paths(&self) -> Result<Vec<TrackedFileInfo>> {
-        let records = sqlx::query_as!(
-            TrackedFileInfo,
-            r#"
-            SELECT path, size as "size: i64", created_at, updated_at
-            FROM files 
-            ORDER BY path
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(records)
-    }
-
-    /// Insert a history entry for an action affecting a specific file
-    pub async fn insert_history_entry(
-        &self,
-        action_id: i64,
-        action_type: ActionType,
-        file_path: &str,
-        file_b3sum: Option<&str>,
-        file_size: Option<i64>,
-        metadata: Option<JsonValue>,
-    ) -> Result<()> {
-        let relative_path = self.convert_to_relative_path(file_path)?;
-        let metadata_str = metadata.map(|m| m.to_string());
-        let action_type_int = action_type.to_i32();
-
-        sqlx::query!(
-            r#"
-            INSERT INTO history (action_id, action_type, path, b3sum, size, metadata)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
-            action_id,
-            action_type_int,
-            relative_path,
-            file_b3sum,
-            file_size,
-            metadata_str
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Insert multiple history entries for a single action
+    /// Insert history entries for a batch of files
     pub async fn insert_history_entries(
         &self,
         action_id: i64,
@@ -522,89 +383,108 @@ impl Database {
             return Ok(());
         }
 
-        let action_type_int = action_type.to_i32();
-        let metadata_str = metadata.map(|m| m.to_string());
-
-        // Start a transaction for batch insert
         let mut tx = self.pool.begin().await?;
-        for (file_path, file_b3sum, file_size) in file_entries {
+        let metadata_json = metadata
+            .map(|m| serde_json::to_string(&m).unwrap_or_default())
+            .unwrap_or_default();
+
+        for (file_path, b3sum, size) in file_entries {
             let relative_path = self.convert_to_relative_path(file_path)?;
 
             sqlx::query(
                 r#"
                 INSERT INTO history (action_id, action_type, path, b3sum, size, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                 "#,
             )
             .bind(action_id)
-            .bind(action_type_int)
-            .bind(relative_path)
-            .bind(file_b3sum)
-            .bind(file_size)
-            .bind(&metadata_str)
+            .bind(action_type.to_i32())
+            .bind(&relative_path)
+            .bind(b3sum)
+            .bind(size)
+            .bind(&metadata_json)
             .execute(&mut *tx)
             .await?;
         }
 
         tx.commit().await?;
-
         Ok(())
     }
 
-    /// Get history entries with optional filters
+    /// Get history entries with optional limit and filter
     pub async fn get_history_entries(
         &self,
         limit: Option<usize>,
-        action_type_filter: Option<ActionType>,
+        action_filter: Option<ActionType>,
     ) -> Result<Vec<HistoryRecord>> {
-        let limit_clause = limit.map(|l| l as i64).unwrap_or(i64::MAX);
+        let limit = limit.unwrap_or(20) as i64;
 
-        let records = if let Some(filter) = action_type_filter {
-            let filter_int = filter.to_i32();
-            sqlx::query_as!(
-                HistoryRecord,
-                r#"
-                SELECT id, action_id, action_type, path, b3sum, size, metadata
-                FROM history 
-                WHERE action_type = ?1
-                ORDER BY action_id DESC
-                LIMIT ?2
-                "#,
-                filter_int,
-                limit_clause
-            )
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query_as!(
-                HistoryRecord,
-                r#"
-                SELECT id, action_id , action_type , path, b3sum, size, metadata
-                FROM history 
-                ORDER BY action_id DESC
-                LIMIT ?1
-                "#,
-                limit_clause
-            )
-            .fetch_all(&self.pool)
-            .await?
+        let records = match action_filter {
+            Some(action_type) => {
+                let action_type = action_type.to_i32();
+                sqlx::query_as!(
+                    HistoryRecord,
+                    r#"
+                    SELECT id, action_id, action_type, path, b3sum, size, metadata
+                    FROM history
+                    WHERE action_type = ?1
+                    LIMIT ?2
+                    "#,
+                    action_type,
+                    limit
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as!(
+                    HistoryRecord,
+                    r#"
+                    SELECT id, action_id, action_type, path, b3sum, size, metadata
+                    FROM history
+                    LIMIT ?1
+                    "#,
+                    limit
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
         };
 
         Ok(records)
     }
 
-    /// Get all history entries for a specific action_id
-    pub async fn get_history_entries_by_action_id(
+    /// Get history entries by action ID (base58 encoded)
+    pub async fn get_history_entries_by_action_id_base58(
         &self,
-        action_id: i64,
+        action_id_base58: &str,
     ) -> Result<Vec<HistoryRecord>> {
+        // Decode base58 action ID
+        let decoded =
+            bs58::decode(action_id_base58)
+                .into_vec()
+                .map_err(|_| DdriveError::Validation {
+                    message: "Invalid action ID format".to_string(),
+                })?;
+
+        if decoded.len() != 8 {
+            return Err(DdriveError::Validation {
+                message: "Invalid action ID length".to_string(),
+            });
+        }
+
+        // Convert bytes to i64
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded);
+        let action_id = i64::from_be_bytes(bytes);
+
         let records = sqlx::query_as!(
             HistoryRecord,
             r#"
-            SELECT id, action_id, action_type , path, b3sum, size, metadata
-            FROM history 
+            SELECT id, action_id, action_type, path, b3sum, size, metadata
+            FROM history
             WHERE action_id = ?1
-            ORDER BY id ASC
+            ORDER BY path
             "#,
             action_id
         )
@@ -614,44 +494,52 @@ impl Database {
         Ok(records)
     }
 
-    /// Get all history entries for a specific action_id from base58 string
-    pub async fn get_history_entries_by_action_id_base58(
-        &self,
-        action_id_base58: &str,
-    ) -> Result<Vec<HistoryRecord>> {
-        let action_id_bytes =
-            bs58::decode(action_id_base58)
-                .into_vec()
-                .map_err(|e| DdriveError::Validation {
-                    message: format!("Invalid base58 action ID: {e}"),
-                })?;
+    /// Get files that need verification based on configuration
+    pub async fn get_files_for_check(&self) -> Result<Vec<FileRecord>> {
+        let records = sqlx::query_as!(
+            FileRecord,
+            r#"
+            SELECT id, path, created_at, updated_at, last_checked, b3sum, size
+            FROM files
+            WHERE last_checked IS NULL
+            ORDER BY path
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-        if action_id_bytes.len() != 8 {
-            return Err(DdriveError::Validation {
-                message: "Invalid action ID length".to_string(),
-            });
-        }
-
-        let action_id = i64::from_be_bytes(action_id_bytes.try_into().map_err(|_| {
-            DdriveError::Validation {
-                message: "Invalid action ID format".to_string(),
-            }
-        })?);
-
-        self.get_history_entries_by_action_id(action_id).await
+        Ok(records)
     }
 
-    /// Clean up old history entries based on action type and age
+    /// Get lightweight file info for status display
+    pub async fn get_tracked_file_paths(&self) -> Result<Vec<TrackedFileInfo>> {
+        let records = sqlx::query_as!(
+            TrackedFileInfo,
+            r#"
+            SELECT path, size, created_at
+            FROM files
+            ORDER BY path
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(records)
+    }
+
+    /// Clean up old history entries
     pub async fn cleanup_old_history(
         &self,
         action_type: ActionType,
         cutoff_timestamp: i64,
     ) -> Result<usize> {
-        let action_type_int = action_type.to_i32();
-
+        let action_type = action_type.to_i32();
         let result = sqlx::query!(
-            "DELETE FROM history WHERE action_type = ?1 AND action_id < ?2",
-            action_type_int,
+            r#"
+            DELETE FROM history
+            WHERE action_type = ?1 AND action_id < ?2
+            "#,
+            action_type,
             cutoff_timestamp
         )
         .execute(&self.pool)
@@ -660,200 +548,30 @@ impl Database {
         Ok(result.rows_affected() as usize)
     }
 
-    /// Create a backup of the database to the specified file
-    pub async fn backup_to_file(&self, backup_path: &Path) -> Result<()> {
-        // For now, use a simple file copy approach
-        // In the future, we could use SQLite's backup API directly
-        let current_db_path = self.repo_root.join(".ddrive").join("metadata.sqlite3");
+    /// Convert an absolute path to a path relative to the repository root
+    fn convert_to_relative_path(&self, file_path: &str) -> Result<String> {
+        let path = Path::new(file_path);
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf().canonicalize()?
+        } else {
+            self.repo_root.join(path).canonicalize()?
+        };
 
-        if !current_db_path.exists() {
-            return Err(DdriveError::FileSystem {
-                message: "Database file does not exist".to_string(),
-            });
+        match absolute_path.strip_prefix(&self.repo_root) {
+            Ok(relative) => Ok(relative.to_string_lossy().into_owned()),
+            Err(_) => Err(DdriveError::FileSystem {
+                message: format!(
+                    "Path {} is not within repository root {}",
+                    file_path,
+                    self.repo_root.display()
+                ),
+            }),
         }
-
-        // Ensure the backup directory exists
-        if let Some(parent) = backup_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| DdriveError::FileSystem {
-                message: format!("Failed to create backup directory: {e}"),
-            })?;
-        }
-
-        // Copy the database file
-        std::fs::copy(&current_db_path, backup_path).map_err(|e| DdriveError::FileSystem {
-            message: format!("Failed to create database backup: {e}"),
-        })?;
-
-        Ok(())
-    }
-
-    /// Restore database from a backup file
-    pub async fn restore_from_file(&self, backup_path: &Path) -> Result<()> {
-        if !backup_path.exists() {
-            return Err(DdriveError::FileSystem {
-                message: format!("Backup file does not exist: {}", backup_path.display()),
-            });
-        }
-
-        // Close existing connections
-        self.pool.close().await;
-
-        // Copy the backup file over the current database
-        let current_db_path = self.repo_root.join(".ddrive").join("metadata.sqlite3");
-
-        // Create backup of current database first
-        let backup_current = current_db_path.with_extension("sqlite3.backup");
-        if current_db_path.exists() {
-            std::fs::copy(&current_db_path, &backup_current).map_err(|e| {
-                DdriveError::FileSystem {
-                    message: format!("Failed to backup current database: {e}"),
-                }
-            })?;
-        }
-
-        // Copy the restore file to the database location
-        std::fs::copy(backup_path, &current_db_path).map_err(|e| {
-            // Try to restore the original database if copy failed
-            if backup_current.exists() {
-                let _ = std::fs::copy(&backup_current, &current_db_path);
-            }
-            DdriveError::FileSystem {
-                message: format!("Failed to restore database from backup: {e}"),
-            }
-        })?;
-
-        // Clean up the backup of current database
-        if backup_current.exists() {
-            let _ = std::fs::remove_file(&backup_current);
-        }
-
-        Ok(())
-    }
-
-    /// Get object store path for a given b3sum using double directory strategy
-    pub fn get_object_path(&self, b3sum: &str) -> PathBuf {
-        if b3sum.len() < 4 {
-            // Fallback for short checksums
-            return self.repo_root.join(".ddrive").join("objects").join(b3sum);
-        }
-
-        let dir1 = &b3sum[0..2];
-        let dir2 = &b3sum[2..4];
-        self.repo_root
-            .join(".ddrive")
-            .join("objects")
-            .join(dir1)
-            .join(dir2)
-            .join(b3sum)
-    }
-
-    /// Store a file in the object store using hard links
-    pub async fn store_object(&self, b3sum: &str, source_path: &Path) -> Result<()> {
-        let object_path = self.get_object_path(b3sum);
-
-        // Create parent directories
-        if let Some(parent) = object_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| DdriveError::FileSystem {
-                message: format!("Failed to create object directory: {e}"),
-            })?;
-        }
-
-        // Create a hard link to the source file if the object doesn't exist
-        if !object_path.exists() {
-            std::fs::hard_link(source_path, &object_path).map_err(|e| DdriveError::HardLink {
-                message: format!("Failed to create hard link for object: {e}"),
-            })?;
-        }
-
-        Ok(())
-    }
-
-    /// Delete object from filesystem
-    pub async fn delete_object(&self, b3sum: &str) -> Result<()> {
-        let object_path = self.get_object_path(b3sum);
-
-        // Remove from filesystem if it exists
-        if object_path.exists() {
-            std::fs::remove_file(&object_path).map_err(|e| DdriveError::FileSystem {
-                message: format!("Failed to delete object file: {e}"),
-            })?;
-        }
-
-        Ok(())
-    }
-
-    /// Check if an object exists in the object store
-    pub fn object_exists(&self, b3sum: &str) -> bool {
-        self.get_object_path(b3sum).exists()
-    }
-
-    /// Find orphaned objects by checking which objects in the filesystem
-    /// are not referenced in the files or history tables
-    pub async fn find_orphaned_objects(&self) -> Result<Vec<String>> {
-        // Get all unique b3sums from files and history tables
-        let referenced_checksums = sqlx::query!(
-            r#"
-            SELECT DISTINCT b3sum FROM (
-                SELECT b3sum FROM files
-                UNION
-                SELECT b3sum FROM history WHERE b3sum IS NOT NULL
-            )
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Convert to HashSet for efficient lookup
-        let referenced_set: std::collections::HashSet<String> = referenced_checksums
-            .into_iter()
-            .map(|row| row.b3sum)
-            .collect();
-
-        // Get all objects from the filesystem
-        let objects_dir = self.repo_root.join(".ddrive").join("objects");
-        let mut orphaned = Vec::new();
-
-        if objects_dir.exists() {
-            Self::scan_objects_directory(&objects_dir, &referenced_set, &mut orphaned)?;
-        }
-
-        Ok(orphaned)
-    }
-
-    /// Recursively scan the objects directory to find orphaned objects
-    fn scan_objects_directory(
-        dir: &Path,
-        referenced_checksums: &std::collections::HashSet<String>,
-        orphaned: &mut Vec<String>,
-    ) -> Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                // Recursively scan subdirectories
-                Self::scan_objects_directory(&path, referenced_checksums, orphaned)?;
-            } else if path.is_file() {
-                // Check if this object is referenced
-                if let Some(file_name) = path.file_name() {
-                    let checksum = file_name.to_string_lossy().to_string();
-                    if !referenced_checksums.contains(&checksum) {
-                        orphaned.push(checksum);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Close the database connection pool gracefully
-    pub async fn close(&self) {
-        self.pool.close().await;
     }
 }
 
-#[derive(Debug, Clone, FromRow)]
+/// File record from the database
+#[derive(Debug, FromRow)]
 pub struct FileRecord {
     pub id: i64,
     pub path: String,
@@ -864,64 +582,46 @@ pub struct FileRecord {
     pub size: i64,
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub struct TrackedFileInfo {
-    pub path: String,
-    pub size: i64,
-    pub created_at: chrono::NaiveDateTime,
-    pub updated_at: chrono::NaiveDateTime,
-}
-
-#[derive(Debug, Clone, FromRow)]
-pub struct HistoryRecord {
-    pub id: i64,
-    pub action_id: i64,
-    pub action_type: ActionType,
-    pub path: String,
-    pub b3sum: String,
-    pub size: i64,
-    pub metadata: Option<String>,
-}
-
-impl HistoryRecord {
-    /// Convert action_id (Unix timestamp) to DateTime
-    pub fn action_timestamp(&self) -> DateTime<Utc> {
-        DateTime::from_timestamp(self.action_id, 0).unwrap_or_else(Utc::now)
-    }
-
-    /// Get action_id as base58 string for display
-    pub fn action_id_base58(&self) -> String {
-        bs58::encode(self.action_id.to_be_bytes()).into_string()
-    }
-
-    /// Parse metadata as JSON
-    pub fn metadata_json(&self) -> Result<Option<JsonValue>> {
-        match &self.metadata {
-            Some(json_str) => {
-                let value =
-                    serde_json::from_str(json_str).map_err(|e| DdriveError::Validation {
-                        message: format!("Invalid JSON in history metadata: {e}"),
-                    })?;
-                Ok(Some(value))
-            }
-            None => Ok(None),
+impl From<&FileRecord> for crate::scanner::FileInfo {
+    fn from(record: &FileRecord) -> Self {
+        Self {
+            path: std::path::PathBuf::from(&record.path),
+            size: record.size as u64,
+            modified: std::time::SystemTime::UNIX_EPOCH,
         }
     }
 }
 
-impl FileRecord {
-    /// Convert created_at to UTC DateTime
-    pub fn created_at_utc(&self) -> DateTime<Utc> {
-        self.created_at.and_utc()
+/// Lightweight file info for status display
+#[derive(Debug, FromRow)]
+pub struct TrackedFileInfo {
+    pub path: String,
+    pub size: i64,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+/// History record from the database
+#[derive(Debug, FromRow)]
+pub struct HistoryRecord {
+    pub id: i64,
+    pub action_id: i64,
+    pub action_type: i64,
+    pub path: String,
+    pub b3sum: Option<String>,
+    pub size: Option<i64>,
+    pub metadata: Option<String>,
+}
+
+impl HistoryRecord {
+    pub fn action_type_enum(&self) -> ActionType {
+        ActionType::from(self.action_type)
     }
 
-    /// Convert updated_at to UTC DateTime
-    pub fn updated_at_utc(&self) -> DateTime<Utc> {
-        self.updated_at.and_utc()
+    pub fn action_timestamp(&self) -> DateTime<Utc> {
+        DateTime::from_timestamp(self.action_id, 0).unwrap_or_else(Utc::now)
     }
 
-    /// Convert last_checked to UTC DateTime if present
-    pub fn last_checked_utc(&self) -> Option<DateTime<Utc>> {
-        self.last_checked.map(|dt| dt.and_utc())
+    pub fn action_id_base58(&self) -> String {
+        bs58::encode(self.action_id.to_be_bytes()).into_string()
     }
 }

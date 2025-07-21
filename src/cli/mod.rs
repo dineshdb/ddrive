@@ -1,10 +1,20 @@
+mod add;
+mod dedup;
+mod log;
+mod prune;
+mod status;
+mod verify;
+
 use std::path::PathBuf;
 
-use crate::{
-    AppContext, Result, add::AddCommand, database::ActionType, duplicates::DuplicatesCommand,
-    log::HistoryCommand, prune::PruneCommand, repository::RepositoryFinder, status::StatusCommand,
-    verify::VerifyCommand,
-};
+use crate::{AppContext, Result, database::ActionType, repository::Repository};
+use add::AddCommand;
+use dedup::DedupCommand;
+use log::HistoryCommand;
+use prune::PruneCommand;
+use status::StatusCommand;
+use verify::VerifyCommand;
+
 use clap::{Parser, Subcommand};
 use glob::Pattern;
 use tracing::{debug, info};
@@ -68,34 +78,16 @@ pub enum HistoryAction {
     },
 }
 
-pub fn parse_args() -> Cli {
-    Cli::parse()
-}
-
 pub async fn run_command(cli: Cli) -> Result<()> {
-    let repo_finder = RepositoryFinder::new();
-
+    let current_dir = std::env::current_dir()?;
     match cli.command {
         Some(Commands::Init) => {
-            repo_finder.init_repository().await?;
+            Repository::init_repository(current_dir).await?;
             Ok(())
         }
         Some(Commands::Add { path }) => {
-            if !path.exists() {
-                return Err(crate::DdriveError::FileSystem {
-                    message: format!("Path does not exist: {}", path.display()),
-                });
-            }
-
-            // Check if path is readable
-            if let Err(e) = std::fs::metadata(&path) {
-                return Err(crate::DdriveError::PermissionDenied {
-                    message: format!("Cannot access path '{}': {e}", path.display()),
-                });
-            }
-
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root.clone()).await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
             let add_command = AddCommand::new(&context);
 
             debug!("Tracking files in: {}", path.display());
@@ -112,8 +104,8 @@ pub async fn run_command(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Verify { path, force }) => {
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root).await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
             let verify_command = VerifyCommand::new(&context);
 
             let result = verify_command.execute(path.as_ref(), force).await?;
@@ -129,30 +121,34 @@ pub async fn run_command(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Dedup) => {
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root).await?;
-            let duplicates_command = DuplicatesCommand::new(&context);
-            duplicates_command.execute().await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let dedup_command = DedupCommand::new(&context);
+            dedup_command.execute().await?;
             Ok(())
         }
         Some(Commands::Status) => {
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root.clone()).await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
             let status_command = StatusCommand::new(&context);
             status_command.execute().await?;
             Ok(())
         }
 
         Some(Commands::Prune) => {
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root).await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
             let prune_command = PruneCommand::new(&context);
-            prune_command.execute().await?;
+            let result = prune_command.execute().await?;
+            info!(
+                "Pruning complete: {} old entries removed, {} duplicate groups processed",
+                result.pruned_backups, result.duplicates_processed
+            );
             Ok(())
         }
         Some(Commands::Log { action }) => {
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root).await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
             let history_command = HistoryCommand::new(&context);
             let Some(action) = action else {
                 history_command.list(None, None).await?;
@@ -172,8 +168,8 @@ pub async fn run_command(cli: Cli) -> Result<()> {
         }
         None => {
             info!("Showing ddrive status (default command)...");
-            let repo_root = repo_finder.ensure_repository_exists()?;
-            let context = AppContext::new(repo_root).await?;
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
             let status_command = StatusCommand::new(&context);
             status_command.execute().await?;
             Ok(())

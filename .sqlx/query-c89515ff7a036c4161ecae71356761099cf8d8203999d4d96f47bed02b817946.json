@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            DELETE FROM history\n            WHERE action_type = ?1 AND action_id < ?2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c89515ff7a036c4161ecae71356761099cf8d8203999d4d96f47bed02b817946"
+}

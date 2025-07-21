@@ -20,10 +20,8 @@ pub struct RepositoryStats {
     pub duplicate_files: usize,
     pub wasted_space: u64,
     pub files_needing_check: usize,
-    pub oldest_tracked: Option<chrono::NaiveDateTime>,
     pub newest_tracked: Option<chrono::NaiveDateTime>,
     pub new_files: Vec<String>,
-    pub updated_files: Vec<String>,
     pub deleted_files: Vec<String>,
 }
 
@@ -41,7 +39,7 @@ impl<'a> StatusCommand<'a> {
     async fn gather_stats(&self) -> Result<RepositoryStats> {
         // Get lightweight tracked file info for status
         let tracked_files = self.context.database.get_tracked_file_paths().await?;
-        let (tracked_count, total_tracked_size, oldest_tracked, newest_tracked) =
+        let (tracked_count, total_tracked_size, newest_tracked) =
             self.analyze_tracked_file_info(&tracked_files);
 
         let files_needing_check = self.context.database.get_files_for_check().await?.len();
@@ -54,7 +52,7 @@ impl<'a> StatusCommand<'a> {
         let all_file_paths = scanner.get_all_files(&self.context.repo_root)?;
 
         // Compare filesystem and database to find new and deleted files
-        let (new_files, updated_files, deleted_files, untracked_count, total_untracked_size) = self
+        let (new_files, deleted_files, untracked_count, total_untracked_size) = self
             .compare_file_paths_lightweight(&all_file_paths, &tracked_files)
             .await?;
 
@@ -70,10 +68,8 @@ impl<'a> StatusCommand<'a> {
             duplicate_files,
             wasted_space,
             files_needing_check,
-            oldest_tracked,
             newest_tracked,
             new_files,
-            updated_files,
             deleted_files,
         })
     }
@@ -81,33 +77,21 @@ impl<'a> StatusCommand<'a> {
     fn analyze_tracked_file_info(
         &self,
         tracked_files: &[crate::database::TrackedFileInfo],
-    ) -> (
-        usize,
-        u64,
-        Option<chrono::NaiveDateTime>,
-        Option<chrono::NaiveDateTime>,
-    ) {
+    ) -> (usize, u64, Option<chrono::NaiveDateTime>) {
         let tracked_count = tracked_files.len();
         let total_tracked_size: u64 = tracked_files.iter().map(|f| f.size as u64).sum();
-        let oldest_tracked = tracked_files.iter().map(|f| f.created_at).min();
         let newest_tracked = tracked_files.iter().map(|f| f.created_at).max();
 
-        (
-            tracked_count,
-            total_tracked_size,
-            oldest_tracked,
-            newest_tracked,
-        )
+        (tracked_count, total_tracked_size, newest_tracked)
     }
 
     async fn compare_file_paths_lightweight(
         &self,
         file_paths: &[std::path::PathBuf],
         tracked_files: &[crate::database::TrackedFileInfo],
-    ) -> Result<(Vec<String>, Vec<String>, Vec<String>, usize, u64)> {
+    ) -> Result<(Vec<String>, Vec<String>, usize, u64)> {
         let mut new_files = Vec::new();
         // We don't check for updated files in status command - that's what check is for
-        let updated_files = Vec::new();
         let mut deleted_files = Vec::new();
         let mut untracked_count = 0;
         let mut total_untracked_size = 0u64;
@@ -153,7 +137,6 @@ impl<'a> StatusCommand<'a> {
 
         Ok((
             new_files,
-            updated_files,
             deleted_files,
             untracked_count,
             total_untracked_size,
@@ -276,7 +259,7 @@ impl<'a> StatusCommand<'a> {
                 "  Storage used by duplicates: {}",
                 format_size(stats.wasted_space)
             );
-            info!("  Run 'ddrive duplicates' to see details");
+            info!("  Run 'ddrive dedup' to see details");
             info!("");
         }
 

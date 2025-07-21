@@ -67,15 +67,9 @@ impl<'a> FileProcessor<'a> {
         &self,
         scanned_files: &'b [FileInfo],
         tracked_files: &[FileRecord],
-    ) -> Result<(
-        Vec<&'b FileInfo>,
-        Vec<&'b FileInfo>,
-        Vec<&'b FileInfo>,
-        Vec<FileInfo>,
-    )> {
+    ) -> Result<(Vec<&'b FileInfo>, Vec<&'b FileInfo>, Vec<FileInfo>)> {
         let mut new_files = Vec::new();
         let mut changed_files = Vec::new();
-        let mut unchanged_files = Vec::new();
         let mut deleted_files = Vec::new();
 
         // Build a hash set of scanned paths for quick lookups
@@ -103,8 +97,6 @@ impl<'a> FileProcessor<'a> {
                 Some(record) => {
                     if self.has_file_changed(file, &record).await? {
                         changed_files.push(file);
-                    } else {
-                        unchanged_files.push(file);
                     }
                 }
                 None => {
@@ -113,7 +105,7 @@ impl<'a> FileProcessor<'a> {
             }
         }
 
-        Ok((new_files, changed_files, unchanged_files, deleted_files))
+        Ok((new_files, changed_files, deleted_files))
     }
 
     /// Check if a file has changed (optimized)

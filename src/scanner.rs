@@ -1,9 +1,8 @@
-use crate::database::FileRecord;
 use crate::{DdriveError, Result, ignore::IgnorePatterns};
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::Instant;
 use tracing::{debug, warn};
 use walkdir::WalkDir;
 
@@ -142,17 +141,6 @@ pub struct CheckSumFileInfo {
     pub size: u64,
     pub modified: std::time::SystemTime,
     pub b3sum: String,
-}
-
-impl From<&FileRecord> for FileInfo {
-    fn from(value: &FileRecord) -> Self {
-        Self {
-            path: value.path.clone().into(),
-            size: value.size as u64,
-            modified: UNIX_EPOCH
-                + Duration::from_secs(value.updated_at.and_utc().timestamp() as u64),
-        }
-    }
 }
 
 #[cfg(test)]

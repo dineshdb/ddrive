@@ -42,6 +42,9 @@ ddrive init
 # Add files for tracking (only considers files within the specified path for deletion)
 ddrive add <path>
 
+# Remove files from tracking (doesn't delete the actual files)
+ddrive rm <path> [--pattern <glob-pattern>]
+
 # Verify file integrity
 ddrive verify [--path <pattern>] [--force]
 

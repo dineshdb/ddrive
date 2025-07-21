@@ -20,9 +20,7 @@ use tracing::{debug, error, info, warn};
 pub struct AddResult {
     pub new_files: usize,
     pub changed_files: usize,
-    pub unchanged_files: usize,
     pub deleted_files: usize,
-    pub failed_files: usize,
 }
 
 pub struct AddCommand<'a> {
@@ -40,27 +38,24 @@ impl<'a> AddCommand<'a> {
 
     /// Execute the complete file tracking workflow
     pub async fn execute<P: AsRef<Path>>(&self, path: P) -> Result<AddResult> {
+        let repo_root = &self.context.repo_root.canonicalize()?;
         let path = path.as_ref();
         let config = Config::load(&self.context.repo_root)?;
 
-        // Ensure object store directory exists
-        let object_store_path = config.object_store_path(&self.context.repo_root);
-        let scanner = FileScanner::new(
-            &self.context.ignore_patterns,
-            self.context.repo_root.clone(),
-        );
+        let object_store_path = config.object_store_path(repo_root);
+        let scanner = FileScanner::new(&self.context.ignore_patterns, repo_root.clone());
 
-        let absolute_path = path.canonicalize()?;
-        if !absolute_path.starts_with(&self.context.repo_root) {
+        let absolute_path = &repo_root.join(path).canonicalize()?;
+        if !absolute_path.starts_with(repo_root) {
             error!(
                 "given path is not inside repo {}: {}",
-                &path.display(),
-                &self.context.repo_root.display()
+                path.display(),
+                repo_root.display()
             );
             return Err(DdriveError::InvalidDirectory);
         }
 
-        if absolute_path == self.context.repo_root {
+        if absolute_path == repo_root {
             info!("Adding all files to repo")
         } else {
             info!(
@@ -70,21 +65,19 @@ impl<'a> AddCommand<'a> {
             );
         }
 
-        let files = scanner.scan_directory(&absolute_path)?;
+        let files = scanner.scan_directory(absolute_path)?;
         if files.is_empty() {
             info!("No files found in the specified path");
             return Ok(AddResult {
                 new_files: 0,
                 changed_files: 0,
-                unchanged_files: 0,
                 deleted_files: 0,
-                failed_files: 0,
             });
         }
 
         let path = path.to_str().expect("path error");
         let tracked_files = self.context.database.get_all_files().await?;
-        let tracked_files = if absolute_path == self.context.repo_root {
+        let tracked_files = if absolute_path == repo_root {
             tracked_files
         } else {
             tracked_files
@@ -92,28 +85,24 @@ impl<'a> AddCommand<'a> {
                 .filter(|f| f.path.starts_with(path))
                 .collect()
         };
-        let (new_files, changed_files, unchanged_files, deleted_files) = self
+        let (new_files, changed_files, deleted_files) = self
             .detect_file_changes(&files, tracked_files.as_slice())
             .await?;
 
         self.display_summary(&changed_files, deleted_files.as_slice());
 
         let action_id = chrono::Utc::now().timestamp();
-        let mut failed_files = 0;
         if !new_files.is_empty() {
             info!("Processing {} new files...", new_files.len());
-            failed_files = self
-                .process_new_files(action_id, &new_files, &object_store_path)
+            self.process_new_files(action_id, &new_files, &object_store_path)
                 .await?;
         }
 
         // Process changed files
         if !changed_files.is_empty() {
             info!("Processing {} changed files...", changed_files.len());
-            let changed_failed = self
-                .process_changed_files(action_id, &changed_files, &object_store_path)
+            self.process_changed_files(action_id, &changed_files, &object_store_path)
                 .await?;
-            failed_files += changed_failed;
         }
 
         let deleted_files: Vec<_> = deleted_files.iter().collect();
@@ -127,9 +116,7 @@ impl<'a> AddCommand<'a> {
         Ok(AddResult {
             new_files: new_files.len(),
             changed_files: changed_files.len(),
-            unchanged_files: unchanged_files.len(),
             deleted_files: deleted_files.len(),
-            failed_files,
         })
     }
 
@@ -138,12 +125,7 @@ impl<'a> AddCommand<'a> {
         &self,
         files: &'b [FileInfo],
         tracked_files: &[FileRecord],
-    ) -> Result<(
-        Vec<&'b FileInfo>,
-        Vec<&'b FileInfo>,
-        Vec<&'b FileInfo>,
-        Vec<FileInfo>,
-    )> {
+    ) -> Result<(Vec<&'b FileInfo>, Vec<&'b FileInfo>, Vec<FileInfo>)> {
         self.processor.detect_changes(files, tracked_files).await
     }
 

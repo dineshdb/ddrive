@@ -1,18 +1,12 @@
-pub mod add;
 pub mod checksum;
 pub mod cli;
 pub mod config;
 pub mod database;
-pub mod duplicates;
 pub mod error;
 pub mod ignore;
-pub mod log;
-pub mod prune;
 pub mod repository;
 pub mod scanner;
-pub mod status;
 pub mod utils;
-pub mod verify;
 
 pub use error::{DdriveError, Result};
 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE files \n            SET last_checked = CURRENT_TIMESTAMP\n            WHERE path = ?1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6ca7de86885abec061e02385e5a2a24e970a4734216d91ef63f80e70b6e532fc"
+}

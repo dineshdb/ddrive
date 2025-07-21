@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT path, size as \"size: i64\", created_at, updated_at\n            FROM files \n            ORDER BY path\n            ",
+  "query": "\n            SELECT path, size, created_at\n            FROM files\n            ORDER BY path\n            ",
   "describe": {
     "columns": [
       {
@@ -9,18 +9,13 @@
         "type_info": "Text"
       },
       {
-        "name": "size: i64",
+        "name": "size",
         "ordinal": 1,
         "type_info": "Integer"
       },
       {
         "name": "created_at",
         "ordinal": 2,
-        "type_info": "Datetime"
-      },
-      {
-        "name": "updated_at",
-        "ordinal": 3,
         "type_info": "Datetime"
       }
     ],
@@ -30,9 +25,8 @@
     "nullable": [
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "6fe36f5459d0be716c5010c8bcda1651c0e0416ed8bbefa8eddfde7149dd43ec"
+  "hash": "b220adcc35bd429bcae6bc3ae396b86c257ce8ff2041d71f97fc564a6ac754b0"
 }
