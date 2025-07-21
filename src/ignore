@@ -1,0 +1,41 @@
+# Default ignore patterns for ddrive
+# These patterns are always applied unless overridden
+
+# Version control
+.git/**
+.svn/**
+.hg/**
+
+# Build artifacts and dependencies
+target/**
+build/**
+dist/**
+out/**
+node_modules/**
+vendor/**
+
+# IDE and editor files
+.vscode/**
+.idea/**
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.log
+*.cache
+
+.ddrive/**

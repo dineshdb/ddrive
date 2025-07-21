@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id, path, created_at, updated_at, last_checked, b3sum, size as \"size: i64\"\n            FROM files \n            WHERE path = ?1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "path",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 3,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "last_checked",
+        "ordinal": 4,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "b3sum",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "size: i64",
+        "ordinal": 6,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "82edbe46653af7b74d259ffe333a3ca119acea24e8c126b9c27e63622448a6c9"
+}

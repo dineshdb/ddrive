@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT DISTINCT h.path\n            FROM history h\n            JOIN files f ON h.path = f.path\n            WHERE h.action_type = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eb04120b8efb757a82b88bb90b695d8d4239e7c7c80339c9a04411253971b269"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT DISTINCT b3sum FROM (\n                SELECT b3sum FROM files\n                UNION\n                SELECT b3sum FROM history WHERE b3sum IS NOT NULL\n            )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "b3sum",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "248698dd784a877f73bab0592a521bf1b4c57ffcd8b757a44ba69f759338673d"
+}

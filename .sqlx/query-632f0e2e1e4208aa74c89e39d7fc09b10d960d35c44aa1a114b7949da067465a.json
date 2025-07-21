@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                SELECT id, action_id , action_type , path, b3sum, size, metadata\n                FROM history \n                ORDER BY action_id DESC\n                LIMIT ?1\n                ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "action_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "action_type",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "path",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "b3sum",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "size",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "metadata",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "632f0e2e1e4208aa74c89e39d7fc09b10d960d35c44aa1a114b7949da067465a"
+}

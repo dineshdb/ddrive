@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id, path, created_at, updated_at, last_checked, b3sum, size as \"size: i64\"\n            FROM files \n            WHERE (last_checked IS NULL OR last_checked < datetime('now', '-1 month'))\n            ORDER BY path\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "path",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 3,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "last_checked",
+        "ordinal": 4,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "b3sum",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "size: i64",
+        "ordinal": 6,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6bae33a373fca455939e7f489f28a7dfae67f0b2f3b7f32235326357483377b4"
+}
