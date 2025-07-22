@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id, path, created_at, updated_at, last_checked, b3sum, size as \"size: i64\"\n            FROM files \n            WHERE path = ?1\n            ",
+  "query": "\n            SELECT id, path, created_at, updated_at, last_checked, b3sum, size\n            FROM files \n            WHERE path = ?1\n            ",
   "describe": {
     "columns": [
       {
@@ -34,7 +34,7 @@
         "type_info": "Text"
       },
       {
-        "name": "size: i64",
+        "name": "size",
         "ordinal": 6,
         "type_info": "Integer"
       }
@@ -52,5 +52,5 @@
       false
     ]
   },
-  "hash": "82edbe46653af7b74d259ffe333a3ca119acea24e8c126b9c27e63622448a6c9"
+  "hash": "43e1d62aed99ccb5ac142bfbe8e13756d39a9086f697894dc9311f371fc60604"
 }

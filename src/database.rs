@@ -1,7 +1,7 @@
 use crate::{DdriveError, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, QueryBuilder, SqlitePool};
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumString};
 
@@ -189,8 +189,6 @@ impl Database {
 
         let mut tx = self.pool.begin().await?;
         for (file_path, b3sum, file_size) in records {
-            let relative_path = self.convert_to_relative_path(file_path)?;
-
             // Insert into history for tracking
             sqlx::query(
                 r#"
@@ -200,7 +198,7 @@ impl Database {
             )
             .bind(action_id)
             .bind(ActionType::Delete.to_i32())
-            .bind(&relative_path)
+            .bind(file_path)
             .bind(b3sum)
             .bind(file_size)
             .execute(&mut *tx)
@@ -208,7 +206,7 @@ impl Database {
 
             // Delete from files table
             sqlx::query("DELETE FROM files WHERE path = ?1")
-                .bind(&relative_path)
+                .bind(file_path)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -224,7 +222,7 @@ impl Database {
         let record = sqlx::query_as!(
             FileRecord,
             r#"
-            SELECT id, path, created_at, updated_at, last_checked, b3sum, size as "size: i64"
+            SELECT id, path, created_at, updated_at, last_checked, b3sum, size
             FROM files 
             WHERE path = ?1
             "#,
@@ -234,6 +232,22 @@ impl Database {
         .await?;
 
         Ok(record)
+    }
+
+    /// Get all the records matching given path
+    pub async fn get_files_by_paths(&self, file_paths: &Vec<&str>) -> Result<Vec<FileRecord>> {
+        let mut query_builder = QueryBuilder::new(
+            "SELECT id, path, created_at, updated_at, last_checked, b3sum, size FROM files WHERE path IN (",
+        );
+
+        query_builder.push_values(file_paths, |mut b, path| {
+            b.push_bind(path);
+        });
+
+        query_builder.push(")");
+        let query = query_builder.build_query_as::<FileRecord>();
+        let records = query.fetch_all(&self.pool).await?;
+        Ok(records)
     }
 
     /// Update the last_checked timestamp for a file

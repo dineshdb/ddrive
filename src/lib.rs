@@ -3,7 +3,6 @@ pub mod cli;
 pub mod config;
 pub mod database;
 pub mod error;
-pub mod ignore;
 pub mod repository;
 pub mod scanner;
 pub mod utils;
@@ -15,7 +14,6 @@ pub use error::{DdriveError, Result};
 pub struct AppContext {
     pub database: database::Database,
     pub repo_root: std::path::PathBuf,
-    pub ignore_patterns: ignore::IgnorePatterns,
     pub config: config::Config,
 }
 
@@ -25,15 +23,11 @@ impl AppContext {
         let database_url = format!("sqlite://{}", db_path.display());
         let database = database::Database::new(&database_url, repo_root.clone()).await?;
 
-        let ignore_file = repo_root.join(".ddrive").join("ignore");
-        let ignore_patterns = ignore::IgnorePatterns::load(&ignore_file)?;
-
         let config = config::Config::load(&repo_root)?;
 
         Ok(Self {
             database,
             repo_root,
-            ignore_patterns,
             config,
         })
     }
@@ -48,21 +42,9 @@ impl AppContext {
         &self.repo_root
     }
 
-    /// Get ignore patterns
-    pub fn ignore_patterns(&self) -> &ignore::IgnorePatterns {
-        &self.ignore_patterns
-    }
-
     /// Get configuration
     pub fn config(&self) -> &config::Config {
         &self.config
-    }
-
-    /// Reload ignore patterns from disk
-    pub async fn reload_ignore_patterns(&mut self) -> Result<()> {
-        let ignore_file = self.repo_root.join(".ddrive").join("ignore");
-        self.ignore_patterns = ignore::IgnorePatterns::load(&ignore_file)?;
-        Ok(())
     }
 
     /// Reload configuration from disk

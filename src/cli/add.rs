@@ -20,7 +20,6 @@ use tracing::{debug, error, info, warn};
 pub struct AddResult {
     pub new_files: usize,
     pub changed_files: usize,
-    pub deleted_files: usize,
 }
 
 pub struct AddCommand<'a> {
@@ -43,10 +42,10 @@ impl<'a> AddCommand<'a> {
         let config = Config::load(&self.context.repo_root)?;
 
         let object_store_path = config.object_store_path(repo_root);
-        let scanner = FileScanner::new(&self.context.ignore_patterns, repo_root.clone());
+        let scanner = FileScanner::new(repo_root.clone());
 
-        let absolute_path = &repo_root.join(path).canonicalize()?;
-        if !absolute_path.starts_with(repo_root) {
+        let add_path = &repo_root.join(path).canonicalize()?;
+        if !add_path.starts_with(repo_root) {
             error!(
                 "given path is not inside repo {}: {}",
                 path.display(),
@@ -55,7 +54,7 @@ impl<'a> AddCommand<'a> {
             return Err(DdriveError::InvalidDirectory);
         }
 
-        if absolute_path == repo_root {
+        if add_path == repo_root {
             info!("Adding all files to repo")
         } else {
             info!(
@@ -65,19 +64,18 @@ impl<'a> AddCommand<'a> {
             );
         }
 
-        let files = scanner.scan_directory(absolute_path)?;
+        let files = scanner.get_all_files(add_path)?;
         if files.is_empty() {
-            info!("No files found in the specified path");
+            info!("No files found in {}", add_path.display());
             return Ok(AddResult {
                 new_files: 0,
                 changed_files: 0,
-                deleted_files: 0,
             });
         }
 
         let path = path.to_str().expect("path error");
         let tracked_files = self.context.database.get_all_files().await?;
-        let tracked_files = if absolute_path == repo_root {
+        let tracked_files = if add_path == repo_root {
             tracked_files
         } else {
             tracked_files
@@ -104,19 +102,9 @@ impl<'a> AddCommand<'a> {
             self.process_changed_files(action_id, &changed_files, &object_store_path)
                 .await?;
         }
-
-        let deleted_files: Vec<_> = deleted_files.iter().collect();
-        info!("Processing {} deleted files...", deleted_files.len());
-        let deleted_files = self.processor.calculate_checksums_parallel(&deleted_files);
-        self.context
-            .database
-            .batch_delete_file_records(action_id, deleted_files.as_slice())
-            .await?;
-
         Ok(AddResult {
             new_files: new_files.len(),
             changed_files: changed_files.len(),
-            deleted_files: deleted_files.len(),
         })
     }
 

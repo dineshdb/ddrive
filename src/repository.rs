@@ -1,4 +1,3 @@
-use crate::ignore::DEFAULT_IGNORE_PATTERNS;
 use crate::{DdriveError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,7 +67,6 @@ impl Repository {
         let ddrive_path = repo_root.join(".ddrive");
         let objects_dir = ddrive_path.join("objects");
         let db_path = ddrive_path.join("metadata.sqlite3");
-        let ignore_file = ddrive_path.join("ignore");
         let repo = Repository { repo_root };
 
         if ddrive_path.exists() && repo.is_valid()? {
@@ -81,12 +79,6 @@ impl Repository {
 
         debug!("Creating database and running migrations");
         repo.init_database(&db_path).await?;
-
-        // Create default ignore file
-        if !ignore_file.exists() {
-            debug!("Creating default ignore file");
-            fs::write(&ignore_file, DEFAULT_IGNORE_PATTERNS)?;
-        }
 
         info!("Repository initialized successfully");
         Ok(repo)

@@ -45,11 +45,12 @@ impl<'a> StatusCommand<'a> {
         let files_needing_check = self.context.database.get_files_for_check().await?.len();
 
         // Get all file paths from the filesystem (lightweight scan)
-        let scanner = FileScanner::new(
-            &self.context.ignore_patterns,
-            self.context.repo_root.clone(),
-        );
-        let all_file_paths = scanner.get_all_files(&self.context.repo_root)?;
+        let scanner = FileScanner::new(self.context.repo_root.clone());
+        let all_file_paths: Vec<_> = scanner
+            .get_all_files(&self.context.repo_root)?
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
 
         // Compare filesystem and database to find new and deleted files
         let (new_files, deleted_files, untracked_count, total_untracked_size) = self
@@ -173,10 +174,7 @@ impl<'a> StatusCommand<'a> {
     // This method has been moved to utils.rs as a utility function
 
     fn display_status(&self, stats: &RepositoryStats) {
-        // Repository header with friendly message
-        info!("Backup status for {}", self.context.repo_root.display());
-        info!("");
-
+        info!("Any tracked files that have changed in filesystem are not shown here");
         // Define constants for path display
         const MAX_PATH_LENGTH: usize = 50; // Maximum length for displayed paths
         const MAX_SAMPLES: usize = 3; // Maximum number of sample files to show per directory

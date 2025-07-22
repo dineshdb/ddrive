@@ -2,6 +2,7 @@ mod add;
 mod dedup;
 mod log;
 mod prune;
+mod rm;
 mod status;
 mod verify;
 
@@ -12,6 +13,7 @@ use add::AddCommand;
 use dedup::DedupCommand;
 use log::HistoryCommand;
 use prune::PruneCommand;
+use rm::RmCommand;
 use status::StatusCommand;
 use verify::VerifyCommand;
 
@@ -37,6 +39,11 @@ pub enum Commands {
         /// Path to track (file or directory). Only files within this path will be considered for deletion.
         path: PathBuf,
     },
+    /// Remove files from tracking
+    Rm {
+        #[command(subcommand)]
+        action: RmAction,
+    },
     /// Verify integrity of tracked files
     Verify {
         /// Optional path prefix to verify only files under this path
@@ -58,6 +65,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<HistoryAction>,
     },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum RmAction {
+    Tracked { pattern: Pattern },
+    Deleted { pattern: Option<Pattern> },
 }
 
 #[derive(Subcommand)]
@@ -93,14 +106,25 @@ pub async fn run_command(cli: Cli) -> Result<()> {
             debug!("Tracking files in: {}", path.display());
             let result = add_command.execute(&path).await?;
 
-            if result.new_files > 0 || result.changed_files > 0 || result.deleted_files > 0 {
+            if result.new_files > 0 || result.changed_files > 0 {
                 info!(
-                    "Added {} new, {} changed, {} deleted files",
-                    result.new_files, result.changed_files, result.deleted_files
+                    "Added {} new, {} changed",
+                    result.new_files, result.changed_files,
                 );
             } else {
                 info!("No changes detected - all files are up to date");
             }
+            Ok(())
+        }
+        Some(Commands::Rm { action }) => {
+            let repo = Repository::find_repository(current_dir)?;
+            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let rm_command = RmCommand::new(&context);
+
+            match action {
+                RmAction::Tracked { pattern } => rm_command.tracked(pattern).await?,
+                RmAction::Deleted { pattern } => rm_command.deleted(pattern).await?,
+            };
             Ok(())
         }
         Some(Commands::Verify { path, force }) => {
