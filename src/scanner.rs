@@ -21,6 +21,7 @@ impl FileScanner {
         let file_paths: Vec<_> = WalkBuilder::new(path)
             .follow_links(false)
             .hidden(false)
+            .ignore(true)
             .build()
             .filter_map(|entry| match entry {
                 Ok(entry) => {
@@ -35,6 +36,7 @@ impl FileScanner {
                             path: path.to_path_buf(),
                             size: metadata.len(),
                             modified,
+                            b3sum: None,
                         })
                     } else {
                         None
@@ -62,6 +64,7 @@ pub struct FileInfo {
     pub path: PathBuf,
     pub size: u64,
     pub modified: std::time::SystemTime,
+    pub b3sum: Option<String>,
 }
 
 #[derive(Debug, Clone)]

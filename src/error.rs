@@ -1,9 +1,14 @@
+use std::path::StripPrefixError;
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DdriveError {
     #[error("Invalid directory")]
     InvalidDirectory,
+
+    #[error("error getting relative path: {0}")]
+    InvalidPath(#[from] StripPrefixError),
 
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -50,7 +55,9 @@ impl DdriveError {
         match self {
             DdriveError::Repository { .. } => 2,
             DdriveError::Database(_) | DdriveError::SqlxMigration(_) => 3,
-            DdriveError::FileSystem { .. } | DdriveError::InvalidDirectory => 4,
+            DdriveError::FileSystem { .. }
+            | DdriveError::InvalidDirectory
+            | DdriveError::InvalidPath(_) => 4,
             DdriveError::HardLink { .. } => 4,
             DdriveError::Checksum { .. } => 5,
             DdriveError::Validation { .. } => 6,

@@ -1,4 +1,4 @@
-use crate::{DdriveError, Result};
+use crate::{DdriveError, Result, scanner::FileInfo};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, QueryBuilder, SqlitePool};
@@ -133,15 +133,16 @@ impl Database {
     pub async fn batch_update_file_records(
         &self,
         action_id: i64,
-        records: &[(String, String, i64)], // (file_path, b3sum, file_size)
+        records: &[&FileInfo], // (file_path, b3sum, file_size)
     ) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
 
         let mut tx = self.pool.begin().await?;
-        for (file_path, b3sum, file_size) in records {
-            let relative_path = self.convert_to_relative_path(file_path)?;
+        for file in records {
+            let b3sum = file.b3sum.as_ref().expect("b3sum");
+            let relative_path = file.path.to_str().expect("relative path");
 
             // Insert into history for tracking
             sqlx::query(
@@ -152,9 +153,9 @@ impl Database {
             )
             .bind(action_id)
             .bind(ActionType::Update.to_i32())
-            .bind(&relative_path)
+            .bind(relative_path)
             .bind(b3sum)
-            .bind(file_size)
+            .bind(file.size as i64)
             .execute(&mut *tx)
             .await?;
 
@@ -167,8 +168,8 @@ impl Database {
                 "#,
             )
             .bind(b3sum)
-            .bind(file_size)
-            .bind(&relative_path)
+            .bind(file.size as i64)
+            .bind(relative_path)
             .execute(&mut *tx)
             .await?;
         }
@@ -602,6 +603,7 @@ impl From<&FileRecord> for crate::scanner::FileInfo {
             path: std::path::PathBuf::from(&record.path),
             size: record.size as u64,
             modified: std::time::SystemTime::UNIX_EPOCH,
+            b3sum: Some(record.b3sum.clone()),
         }
     }
 }

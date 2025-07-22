@@ -67,7 +67,7 @@ impl<'a> FileProcessor<'a> {
         &self,
         scanned_files: &'b [FileInfo],
         tracked_files: &[FileRecord],
-    ) -> Result<(Vec<&'b FileInfo>, Vec<&'b FileInfo>, Vec<FileInfo>)> {
+    ) -> Result<(Vec<&'b FileInfo>, Vec<FileInfo>, Vec<FileInfo>)> {
         let mut new_files = Vec::new();
         let mut changed_files = Vec::new();
         let mut deleted_files = Vec::new();
@@ -95,7 +95,24 @@ impl<'a> FileProcessor<'a> {
                 .await?
             {
                 Some(record) => {
-                    if self.has_file_changed(file, &record).await? {
+                    let modified_time = file
+                        .modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| crate::DdriveError::FileSystem {
+                            message: format!("Invalid modification time: {e:?}"),
+                        })?
+                        .as_secs();
+                    if file.size == record.size as u64
+                        && modified_time <= record.updated_at.and_utc().timestamp() as u64
+                    {
+                        continue;
+                    }
+
+                    let current_checksum =
+                        self.checksum_calculator.calculate_checksum(&file.path)?;
+                    if current_checksum != record.b3sum {
+                        let mut file = file.clone();
+                        file.b3sum = Some(current_checksum);
                         changed_files.push(file);
                     }
                 }
@@ -106,40 +123,6 @@ impl<'a> FileProcessor<'a> {
         }
 
         Ok((new_files, changed_files, deleted_files))
-    }
-
-    /// Check if a file has changed (optimized)
-    async fn has_file_changed(&self, file_info: &FileInfo, record: &FileRecord) -> Result<bool> {
-        // Quick size check first
-        if file_info.size != record.size as u64 {
-            return Ok(true);
-        }
-
-        // Quick timestamp check - if file wasn't modified after last update, assume unchanged
-        if !self.is_file_newer_than_record(file_info, record)? {
-            return Ok(false);
-        }
-
-        // Only calculate checksum if timestamps suggest change
-        // fixme: this checksum shouldn't be ignored since this can be expensive.
-        let current_checksum = self
-            .checksum_calculator
-            .calculate_checksum(&file_info.path)?;
-        Ok(current_checksum != record.b3sum)
-    }
-
-    /// Check if file modification time is newer than database record
-    fn is_file_newer_than_record(&self, file_info: &FileInfo, record: &FileRecord) -> Result<bool> {
-        let file_modified = file_info
-            .modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| crate::DdriveError::FileSystem {
-                message: format!("Invalid modification time: {e:?}"),
-            })?
-            .as_secs();
-
-        let record_updated = record.updated_at.and_utc().timestamp() as u64;
-        Ok(file_modified > record_updated)
     }
 
     /// Calculate checksum for a single file

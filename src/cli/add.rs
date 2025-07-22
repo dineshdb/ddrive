@@ -8,7 +8,6 @@
 use crate::{
     AppContext, DdriveError, Result,
     config::Config,
-    database::FileRecord,
     scanner::{FileInfo, FileScanner},
     utils::{FileProcessor, cow_copy},
 };
@@ -84,7 +83,8 @@ impl<'a> AddCommand<'a> {
                 .collect()
         };
         let (new_files, changed_files, deleted_files) = self
-            .detect_file_changes(&files, tracked_files.as_slice())
+            .processor
+            .detect_changes(&files, tracked_files.as_slice())
             .await?;
 
         self.display_summary(&changed_files, deleted_files.as_slice());
@@ -99,6 +99,7 @@ impl<'a> AddCommand<'a> {
         // Process changed files
         if !changed_files.is_empty() {
             info!("Processing {} changed files...", changed_files.len());
+            let changed_files: Vec<_> = changed_files.iter().collect();
             self.process_changed_files(action_id, &changed_files, &object_store_path)
                 .await?;
         }
@@ -108,17 +109,8 @@ impl<'a> AddCommand<'a> {
         })
     }
 
-    /// Detect file changes by comparing with database records
-    async fn detect_file_changes<'b>(
-        &self,
-        files: &'b [FileInfo],
-        tracked_files: &[FileRecord],
-    ) -> Result<(Vec<&'b FileInfo>, Vec<&'b FileInfo>, Vec<FileInfo>)> {
-        self.processor.detect_changes(files, tracked_files).await
-    }
-
     /// Display summary of files to be processed
-    fn display_summary(&self, changed_files: &[&FileInfo], deleted_files: &[FileInfo]) {
+    fn display_summary(&self, changed_files: &[FileInfo], deleted_files: &[FileInfo]) {
         if !changed_files.is_empty() && changed_files.len() <= 5 {
             info!("Changed files:");
             for file in changed_files {
@@ -186,12 +178,9 @@ impl<'a> AddCommand<'a> {
         object_store_path: &Path,
     ) -> Result<usize> {
         let mut failed_count = 0;
-        let checksums = self.processor.calculate_checksums_parallel(files);
-
-        for (file_info, checksum) in files.iter().zip(checksums) {
-            if let Err(e) =
-                self.copy_to_object_store(&file_info.path, &checksum.1, object_store_path)
-            {
+        for file_info in files.iter() {
+            let b3sum = file_info.b3sum.as_ref().expect("b3sum");
+            if let Err(e) = self.copy_to_object_store(&file_info.path, b3sum, object_store_path) {
                 warn!(
                     "Failed to copy {} to object store: {}",
                     file_info.path.display(),
@@ -203,7 +192,7 @@ impl<'a> AddCommand<'a> {
 
             self.context
                 .database
-                .batch_update_file_records(action_id, &[checksum])
+                .batch_update_file_records(action_id, &[file_info])
                 .await?;
         }
 
