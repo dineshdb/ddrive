@@ -8,11 +8,14 @@ init-db:
     done
     cargo sqlx prepare
 
+clippy:
+    cargo clippy
+
 fmt:
     cargo fmt --all
+    cargo sort
 
-lint: fmt test
-    cargo clippy
+lint: fmt test clippy
 
 test:
     cargo test

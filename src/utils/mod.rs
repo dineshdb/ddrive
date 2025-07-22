@@ -1,7 +1,3 @@
-mod cow;
-
-pub use cow::cow_copy;
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;

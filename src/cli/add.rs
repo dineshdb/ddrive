@@ -9,7 +9,7 @@ use crate::{
     AppContext, DdriveError, Result,
     config::Config,
     scanner::{FileInfo, FileScanner},
-    utils::{FileProcessor, cow_copy},
+    utils::FileProcessor,
 };
 use std::fs;
 use std::path::Path;
@@ -225,23 +225,7 @@ impl<'a> AddCommand<'a> {
             return Ok(());
         }
 
-        match cow_copy(
-            file_path.to_str().expect("path"),
-            object_path.to_str().expect("path"),
-        ) {
-            Ok(_) => {
-                debug!(
-                    "Created hard link for {} -> {}",
-                    file_path.display(),
-                    object_path.display()
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                debug!("Hard link failed, falling back to copy: {e}");
-                // Fall through to copy
-            }
-        }
+        reflink_copy::reflink_or_copy(file_path, object_path)?;
         Ok(())
     }
 }
