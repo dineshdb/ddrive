@@ -3,13 +3,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Repository {
     repo_root: PathBuf,
 }
 
 impl Repository {
-    pub fn get_repo_root(&self) -> &PathBuf {
+    pub fn new(repo_root: PathBuf) -> Self {
+        Repository { repo_root }
+    }
+
+    pub fn root(&self) -> &PathBuf {
         &self.repo_root
     }
 
@@ -97,5 +101,16 @@ impl Repository {
         sqlx::migrate!("./migrations").run(&pool).await?;
         pool.close().await;
         Ok(())
+    }
+
+    pub fn object_dir(&self, checksum: &str) -> PathBuf {
+        // Create object store directory structure (first 2 chars / next 2 chars)
+        let prefix1 = &checksum[0..2];
+        let prefix2 = &checksum[2..4];
+        self.repo_root
+            .join(".ddrive")
+            .join("objects")
+            .join(prefix1)
+            .join(prefix2)
     }
 }

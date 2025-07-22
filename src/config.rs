@@ -173,4 +173,8 @@ impl Config {
     pub fn object_store_path(&self, repo_root: &Path) -> PathBuf {
         repo_root.join(".ddrive").join("objects")
     }
+
+    pub fn object_path(&self, repo_root: &Path, checksum: &str) -> PathBuf {
+        self.object_store_path(repo_root).join(checksum)
+    }
 }

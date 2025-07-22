@@ -1,9 +1,12 @@
 use crate::{AppContext, Result, database::FileRecord, utils};
+use glob::Pattern;
+use reflink_copy;
 use std::collections::HashMap;
 use tracing::info;
 
 pub struct DedupCommand<'a> {
     context: &'a AppContext,
+    path_filter: Option<String>,
 }
 
 #[derive(Debug)]
@@ -15,17 +18,42 @@ pub struct DuplicateGroup {
 
 impl<'a> DedupCommand<'a> {
     pub fn new(context: &'a AppContext) -> Self {
-        Self { context }
+        Self {
+            context,
+            path_filter: None,
+        }
+    }
+
+    pub fn with_path_filter(context: &'a AppContext, path_filter: String) -> Self {
+        Self {
+            context,
+            path_filter: Some(path_filter),
+        }
     }
 
     pub async fn execute(&self) -> Result<Vec<DuplicateGroup>> {
         let all_files = self.context.database.find_duplicates().await?;
-        let duplicates = self.group_duplicates(all_files);
+
+        // Apply path filter if specified
+        let filtered_files = if let Some(filter) = &self.path_filter {
+            info!("Filtering duplicates with pattern: {}", filter);
+            let pattern = Pattern::new(filter)?;
+            all_files
+                .into_iter()
+                .filter(|file| pattern.matches(&file.path))
+                .collect()
+        } else {
+            all_files
+        };
+
+        let duplicates = self.group_duplicates(filtered_files);
 
         if duplicates.is_empty() {
             info!("No duplicate files found");
+            return Ok(duplicates);
         } else {
             self.display_duplicates(&duplicates)?;
+            self.process_duplicates(&duplicates)?;
         }
 
         Ok(duplicates)
@@ -72,7 +100,14 @@ impl<'a> DedupCommand<'a> {
         let mut total_wasted_space = 0i64;
         let total_groups = duplicates.len();
 
-        info!("Found {} duplicate groups", total_groups);
+        if let Some(filter) = &self.path_filter {
+            info!(
+                "Found {} duplicate groups matching filter: {}",
+                total_groups, filter
+            );
+        } else {
+            info!("Found {} duplicate groups", total_groups);
+        }
 
         // Show only top 10 largest duplicates (by wasted space)
         let display_count = std::cmp::min(10, duplicates.len());
@@ -93,14 +128,12 @@ impl<'a> DedupCommand<'a> {
             // Show files for smaller groups, or just count for large groups
             if group.files.len() <= 5 {
                 for file_path in &group.files {
-                    let absolute_path = self.context.repo_root.join(file_path);
-                    info!("  {}", absolute_path.display());
+                    info!("  {file_path}");
                 }
             } else {
                 info!("  {} files (showing first 3):", group.files.len());
                 for file_path in group.files.iter().take(3) {
-                    let absolute_path = self.context.repo_root.join(file_path);
-                    info!("  {}", absolute_path.display());
+                    info!("  {file_path}");
                 }
                 info!("  ... and {} more", group.files.len() - 3);
             }
@@ -123,6 +156,56 @@ impl<'a> DedupCommand<'a> {
             utils::format_size(total_wasted_space as u64)
         );
 
+        Ok(())
+    }
+
+    /// Process duplicate groups by automatically reflinking duplicates and creating backups in .ddrive/objects
+    fn process_duplicates(&self, duplicates: &[DuplicateGroup]) -> Result<()> {
+        // Create the objects directory if it doesn't exist
+        let objects_dir = ".ddrive/objects";
+        std::fs::create_dir_all(objects_dir)?;
+
+        for (i, group) in duplicates.iter().enumerate() {
+            // Always keep the first file and replace others with reflinks
+            let file_to_keep = &group.files[0];
+            println!(
+                "Processing duplicate group {} of {} ({}). Keeping: {}",
+                i + 1,
+                duplicates.len(),
+                &group.checksum[..8],
+                file_to_keep
+            );
+
+            // Create a copy at object store
+            let object_dir = self.context.repo.object_dir(&group.checksum);
+            let backup_path = object_dir.join(group.checksum.clone());
+            std::fs::create_dir_all(&object_dir)?;
+            if !std::path::Path::new(&backup_path).exists() {
+                reflink_copy::reflink_or_copy(file_to_keep, &backup_path)?;
+            }
+
+            // Process each file except the one we're keeping
+            for other_file in group.files.iter().skip(1) {
+                println!("Replacing {other_file} with reflink to {file_to_keep}");
+
+                // Delete the file first
+                if let Err(e) = std::fs::remove_file(other_file) {
+                    println!("Error removing file {other_file}: {e}");
+                    continue;
+                }
+
+                // Create reflink copy
+                if let Err(e) = reflink_copy::reflink_or_copy(file_to_keep, other_file) {
+                    println!("Error creating reflink: {e}",);
+                }
+            }
+        }
+
+        if let Some(filter) = &self.path_filter {
+            println!("\nDeduplication process completed for files matching: {filter}");
+        } else {
+            println!("\nDeduplication process completed.");
+        }
         Ok(())
     }
 }

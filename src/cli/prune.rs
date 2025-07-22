@@ -1,4 +1,4 @@
-use crate::{AppContext, Result, cli::dedup::DedupCommand, config::Config, database::ActionType};
+use crate::{AppContext, Result, cli::dedup::DedupCommand, database::ActionType};
 use tracing::info;
 
 pub struct PruneCommand<'a> {
@@ -17,11 +17,13 @@ impl<'a> PruneCommand<'a> {
     }
 
     pub async fn execute(&self) -> Result<PruneResult> {
-        let config = Config::load(&self.context.repo_root)?;
         let old_deleted_history_entry = self
             .context
             .database
-            .cleanup_old_history(ActionType::Delete, config.prune.cutoff_date().timestamp())
+            .cleanup_old_history(
+                ActionType::Delete,
+                self.context.config.prune.cutoff_date().timestamp(),
+            )
             .await?;
         info!("Pruned {old_deleted_history_entry} old history entries for deleted files.");
 

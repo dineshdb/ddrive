@@ -40,12 +40,9 @@ impl<'a> VerifyCommand<'a> {
         path_filter: Option<&Pattern>,
         force: bool,
     ) -> Result<VerifyResult> {
-        // Load configuration
-        let config = Config::load(&self.context.repo_root)?;
-
         // Get all files that match the filter
         let files_to_check = self
-            .get_files_for_verification(path_filter, force, &config)
+            .get_files_for_verification(path_filter, force, &self.context.config)
             .await?;
 
         if files_to_check.is_empty() {
@@ -234,7 +231,7 @@ impl<'a> VerifyCommand<'a> {
 
     /// Convert relative path from database to absolute path for file access
     fn resolve_absolute_path(&self, relative_path: &str) -> Result<std::path::PathBuf> {
-        Ok(self.context.repo_root.join(relative_path))
+        Ok(self.context.repo.root().join(relative_path))
     }
 
     /// Display summary of check results

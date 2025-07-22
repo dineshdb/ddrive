@@ -55,7 +55,11 @@ pub enum Commands {
         force: bool,
     },
     /// Find duplicate files based on BLAKE3 checksums
-    Dedup,
+    Dedup {
+        /// Optional path pattern to filter which files to consider for deduplication
+        #[arg(short, long)]
+        path: Option<String>,
+    },
     /// Show repository status and statistics
     Status,
     /// Prune deleted files and handle duplicates
@@ -100,7 +104,7 @@ pub async fn run_command(cli: Cli) -> Result<()> {
         }
         Some(Commands::Add { path }) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let add_command = AddCommand::new(&context);
 
             debug!("Tracking files in: {}", path.display());
@@ -118,7 +122,7 @@ pub async fn run_command(cli: Cli) -> Result<()> {
         }
         Some(Commands::Rm { action }) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let rm_command = RmCommand::new(&context);
 
             match action {
@@ -129,7 +133,7 @@ pub async fn run_command(cli: Cli) -> Result<()> {
         }
         Some(Commands::Verify { path, force }) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let verify_command = VerifyCommand::new(&context);
 
             let result = verify_command.execute(path.as_ref(), force).await?;
@@ -144,16 +148,22 @@ pub async fn run_command(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Dedup) => {
+        Some(Commands::Dedup { path }) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
-            let dedup_command = DedupCommand::new(&context);
+            let context = AppContext::new(repo).await?;
+
+            let dedup_command = if let Some(path_filter) = path {
+                DedupCommand::with_path_filter(&context, path_filter)
+            } else {
+                DedupCommand::new(&context)
+            };
+
             dedup_command.execute().await?;
             Ok(())
         }
         Some(Commands::Status) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let status_command = StatusCommand::new(&context);
             status_command.execute().await?;
             Ok(())
@@ -161,7 +171,7 @@ pub async fn run_command(cli: Cli) -> Result<()> {
 
         Some(Commands::Prune) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let prune_command = PruneCommand::new(&context);
             let result = prune_command.execute().await?;
             info!(
@@ -172,7 +182,7 @@ pub async fn run_command(cli: Cli) -> Result<()> {
         }
         Some(Commands::Log { action }) => {
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let history_command = HistoryCommand::new(&context);
             let Some(action) = action else {
                 history_command.list(None, None).await?;
@@ -193,7 +203,7 @@ pub async fn run_command(cli: Cli) -> Result<()> {
         None => {
             info!("Showing ddrive status (default command)...");
             let repo = Repository::find_repository(current_dir)?;
-            let context = AppContext::new(repo.get_repo_root().clone()).await?;
+            let context = AppContext::new(repo).await?;
             let status_command = StatusCommand::new(&context);
             status_command.execute().await?;
             Ok(())

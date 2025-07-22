@@ -50,7 +50,7 @@ impl<'a> RmCommand<'a> {
     /// Remove the deleted files from tracking
     pub async fn deleted(&self, pattern: Option<Pattern>) -> Result<usize> {
         let pattern = pattern.as_ref();
-        let repo_root = &self.context.repo_root.canonicalize()?;
+        let repo_root = &self.context.repo.root().canonicalize()?;
         let processor = FileProcessor::new(self.context);
         let scanner = FileScanner::new(repo_root.clone());
 

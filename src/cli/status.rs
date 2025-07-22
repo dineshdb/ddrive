@@ -45,9 +45,9 @@ impl<'a> StatusCommand<'a> {
         let files_needing_check = self.context.database.get_files_for_check().await?.len();
 
         // Get all file paths from the filesystem (lightweight scan)
-        let scanner = FileScanner::new(self.context.repo_root.clone());
+        let scanner = FileScanner::new(self.context.repo.root().clone());
         let all_file_paths: Vec<_> = scanner
-            .get_all_files(&self.context.repo_root)?
+            .get_all_files(self.context.repo.root())?
             .iter()
             .map(|f| f.path.clone())
             .collect();
@@ -104,7 +104,7 @@ impl<'a> StatusCommand<'a> {
         let fs_paths: std::collections::HashSet<String> = file_paths
             .iter()
             .map(|path| {
-                path.strip_prefix(&self.context.repo_root)
+                path.strip_prefix(self.context.repo.root())
                     .unwrap_or(path)
                     .to_string_lossy()
                     .into_owned()
@@ -114,7 +114,7 @@ impl<'a> StatusCommand<'a> {
         // Find new files (in filesystem but not tracked)
         for file_path in file_paths {
             let relative_path = file_path
-                .strip_prefix(&self.context.repo_root)
+                .strip_prefix(self.context.repo.root())
                 .unwrap_or(file_path)
                 .to_string_lossy();
 

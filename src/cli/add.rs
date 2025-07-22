@@ -7,7 +7,6 @@
 
 use crate::{
     AppContext, DdriveError, Result,
-    config::Config,
     scanner::{FileInfo, FileScanner},
     utils::FileProcessor,
 };
@@ -36,11 +35,8 @@ impl<'a> AddCommand<'a> {
 
     /// Execute the complete file tracking workflow
     pub async fn execute<P: AsRef<Path>>(&self, path: P) -> Result<AddResult> {
-        let repo_root = &self.context.repo_root.canonicalize()?;
+        let repo_root = &self.context.repo.root().canonicalize()?;
         let path = path.as_ref();
-        let config = Config::load(&self.context.repo_root)?;
-
-        let object_store_path = config.object_store_path(repo_root);
         let scanner = FileScanner::new(repo_root.clone());
 
         let add_path = &repo_root.join(path).canonicalize()?;
@@ -59,7 +55,7 @@ impl<'a> AddCommand<'a> {
             info!(
                 "Adding {} to {}",
                 path.display(),
-                self.context.repo_root.display()
+                self.context.repo.root().display()
             );
         }
 
@@ -92,15 +88,14 @@ impl<'a> AddCommand<'a> {
         let action_id = chrono::Utc::now().timestamp();
         if !new_files.is_empty() {
             info!("Processing {} new files...", new_files.len());
-            self.process_new_files(action_id, &new_files, &object_store_path)
-                .await?;
+            self.process_new_files(action_id, &new_files).await?;
         }
 
         // Process changed files
         if !changed_files.is_empty() {
             info!("Processing {} changed files...", changed_files.len());
             let changed_files: Vec<_> = changed_files.iter().collect();
-            self.process_changed_files(action_id, &changed_files, &object_store_path)
+            self.process_changed_files(action_id, &changed_files)
                 .await?;
         }
         Ok(AddResult {
@@ -139,19 +134,12 @@ impl<'a> AddCommand<'a> {
     }
 
     /// Process new files by calculating checksums, inserting records, and copying to object store
-    async fn process_new_files(
-        &self,
-        action_id: i64,
-        files: &[&FileInfo],
-        object_store_path: &Path,
-    ) -> Result<usize> {
+    async fn process_new_files(&self, action_id: i64, files: &[&FileInfo]) -> Result<usize> {
         let checksums = self.processor.calculate_checksums_parallel(files);
 
         let mut failed_count = 0;
         for (file_info, checksum) in files.iter().zip(checksums.iter()) {
-            if let Err(e) =
-                self.copy_to_object_store(&file_info.path, &checksum.1, object_store_path)
-            {
+            if let Err(e) = self.copy_to_object_store(&file_info.path, &checksum.1) {
                 warn!(
                     "Failed to copy {} to object store: {}",
                     file_info.path.display(),
@@ -171,16 +159,11 @@ impl<'a> AddCommand<'a> {
     }
 
     /// Process changed files by updating records and copying to object store
-    async fn process_changed_files(
-        &self,
-        action_id: i64,
-        files: &[&FileInfo],
-        object_store_path: &Path,
-    ) -> Result<usize> {
+    async fn process_changed_files(&self, action_id: i64, files: &[&FileInfo]) -> Result<usize> {
         let mut failed_count = 0;
         for file_info in files.iter() {
             let b3sum = file_info.b3sum.as_ref().expect("b3sum");
-            if let Err(e) = self.copy_to_object_store(&file_info.path, b3sum, object_store_path) {
+            if let Err(e) = self.copy_to_object_store(&file_info.path, b3sum) {
                 warn!(
                     "Failed to copy {} to object store: {}",
                     file_info.path.display(),
@@ -200,16 +183,9 @@ impl<'a> AddCommand<'a> {
     }
 
     /// Copy a file to the object store, using hard links when possible
-    fn copy_to_object_store(
-        &self,
-        file_path: &Path,
-        checksum: &str,
-        object_store_path: &Path,
-    ) -> Result<()> {
+    fn copy_to_object_store(&self, file_path: &Path, checksum: &str) -> Result<()> {
         // Create object store directory structure (first 2 chars / next 2 chars)
-        let prefix1 = &checksum[0..2];
-        let prefix2 = &checksum[2..4];
-        let object_dir = object_store_path.join(prefix1).join(prefix2);
+        let object_dir = self.context.repo.object_dir(checksum);
 
         if !object_dir.exists() {
             fs::create_dir_all(&object_dir).map_err(|e| DdriveError::FileSystem {
