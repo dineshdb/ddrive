@@ -163,7 +163,7 @@ impl Database {
             sqlx::query(
                 r#"
                 UPDATE files 
-                SET b3sum = ?1, size = ?2, updated_at = CURRENT_TIMESTAMP
+                SET b3sum = ?1, size = ?2, updated_at = CURRENT_TIMESTAMP, last_checked = NULL
                 WHERE path = ?3
                 "#,
             )
