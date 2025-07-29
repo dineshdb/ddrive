@@ -1,10 +1,10 @@
-mod add;
-mod dedup;
-mod log;
-mod prune;
-mod rm;
-mod status;
-mod verify;
+pub mod add;
+pub mod dedup;
+pub mod log;
+pub mod prune;
+pub mod rm;
+pub mod status;
+pub mod verify;
 
 use std::path::PathBuf;
 
@@ -110,11 +110,18 @@ pub async fn run_command(cli: Cli) -> Result<()> {
             debug!("Tracking files in: {}", path.display());
             let result = add_command.execute(&path).await?;
 
-            if result.new_files > 0 || result.changed_files > 0 {
-                info!(
-                    "Added {} new, {} changed",
-                    result.new_files, result.changed_files,
-                );
+            if result.new_files > 0 || result.changed_files > 0 || result.renamed_files > 0 {
+                let mut parts = Vec::new();
+                if result.new_files > 0 {
+                    parts.push(format!("{} new", result.new_files));
+                }
+                if result.changed_files > 0 {
+                    parts.push(format!("{} changed", result.changed_files));
+                }
+                if result.renamed_files > 0 {
+                    parts.push(format!("{} renamed", result.renamed_files));
+                }
+                info!("Processed: {}", parts.join(", "));
             } else {
                 info!("No changes detected - all files are up to date");
             }
@@ -175,8 +182,8 @@ pub async fn run_command(cli: Cli) -> Result<()> {
             let prune_command = PruneCommand::new(&context);
             let result = prune_command.execute().await?;
             info!(
-                "Pruning complete: {} old entries removed, {} duplicate groups processed",
-                result.pruned_backups, result.duplicates_processed
+                "Pruning complete: {} old entries removed, {} orphaned objects deleted, {} duplicate groups processed",
+                result.pruned_backups, result.orphaned_objects_deleted, result.duplicates_processed
             );
             Ok(())
         }

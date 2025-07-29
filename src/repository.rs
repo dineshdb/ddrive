@@ -70,6 +70,7 @@ impl Repository {
     pub async fn init_repository(repo_root: PathBuf) -> Result<Repository> {
         let ddrive_path = repo_root.join(".ddrive");
         let objects_dir = ddrive_path.join("objects");
+        let trash_dir = ddrive_path.join("trash");
         let db_path = ddrive_path.join("metadata.sqlite3");
         let repo = Repository { repo_root };
 
@@ -80,6 +81,7 @@ impl Repository {
 
         fs::create_dir_all(&ddrive_path)?;
         fs::create_dir_all(&objects_dir)?;
+        fs::create_dir_all(&trash_dir)?;
 
         debug!("Creating database and running migrations");
         repo.init_database(&db_path).await?;

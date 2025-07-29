@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
+use std::{collections::HashSet, time::UNIX_EPOCH};
 use tracing::{debug, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -58,12 +59,48 @@ impl<'a> FileProcessor<'a> {
         results
     }
 
-    /// Check if files have changed (optimized batch operation)
+    /// Check if files have changed with rename detection (optimized batch operation)
     pub async fn detect_changes<'b>(
         &self,
         scanned_files: &'b [FileInfo],
         tracked_files: &[FileRecord],
-    ) -> Result<(Vec<&'b FileInfo>, Vec<FileInfo>, Vec<FileInfo>)> {
+    ) -> Result<(
+        Vec<&'b FileInfo>,
+        Vec<FileInfo>,
+        Vec<FileInfo>,
+        Vec<(FileInfo, FileInfo)>,
+    )> {
+        self.detect_changes_with_checksum_mode(scanned_files, tracked_files, true)
+            .await
+    }
+
+    /// Lightweight change detection without checksums (for status/summary)
+    pub async fn detect_changes_lightweight<'b>(
+        &self,
+        scanned_files: &'b [FileInfo],
+        tracked_files: &[FileRecord],
+    ) -> Result<(
+        Vec<&'b FileInfo>,
+        Vec<FileInfo>,
+        Vec<FileInfo>,
+        Vec<(FileInfo, FileInfo)>,
+    )> {
+        self.detect_changes_with_checksum_mode(scanned_files, tracked_files, false)
+            .await
+    }
+
+    /// Internal method that handles both lightweight and full change detection
+    async fn detect_changes_with_checksum_mode<'b>(
+        &self,
+        scanned_files: &'b [FileInfo],
+        tracked_files: &[FileRecord],
+        use_checksums: bool,
+    ) -> Result<(
+        Vec<&'b FileInfo>,
+        Vec<FileInfo>,
+        Vec<FileInfo>,
+        Vec<(FileInfo, FileInfo)>,
+    )> {
         let mut new_files = Vec::new();
         let mut changed_files = Vec::new();
         let mut deleted_files = Vec::new();
@@ -104,11 +141,18 @@ impl<'a> FileProcessor<'a> {
                         continue;
                     }
 
-                    let current_checksum =
-                        self.checksum_calculator.calculate_checksum(&file.path)?;
-                    if current_checksum != record.b3sum {
+                    if use_checksums {
+                        let current_checksum =
+                            self.checksum_calculator.calculate_checksum(&file.path)?;
+                        if current_checksum != record.b3sum {
+                            let mut file = file.clone();
+                            file.b3sum = Some(current_checksum);
+                            changed_files.push(file);
+                        }
+                    } else {
+                        // For lightweight mode, assume file changed if size/time differs
                         let mut file = file.clone();
-                        file.b3sum = Some(current_checksum);
+                        file.b3sum = None;
                         changed_files.push(file);
                     }
                 }
@@ -118,7 +162,111 @@ impl<'a> FileProcessor<'a> {
             }
         }
 
-        Ok((new_files, changed_files, deleted_files))
+        // Detect potential renames based on metadata
+        let potential_renames = if use_checksums {
+            // Full rename detection with checksums
+            let new_files_with_checksums = self.calculate_checksums_for_files(&new_files).await?;
+            self.context
+                .database
+                .find_potential_renames(&deleted_files, &new_files_with_checksums)
+                .await?
+        } else {
+            // Lightweight rename detection based on size and modification time
+            self.find_potential_renames_by_metadata(&deleted_files, &new_files)
+        };
+
+        // Remove renamed files from new_files and deleted_files lists
+        let mut final_new_files = Vec::new();
+        let mut final_deleted_files = Vec::new();
+        let mut rename_new_paths = HashSet::new();
+        let mut rename_old_paths = HashSet::new();
+
+        // Collect paths involved in renames
+        for (old_file, new_file) in &potential_renames {
+            rename_old_paths.insert(old_file.path.clone());
+            rename_new_paths.insert(new_file.path.clone());
+        }
+
+        // Filter out files involved in renames
+        for file in new_files {
+            if !rename_new_paths.contains(&file.path) {
+                final_new_files.push(file);
+            }
+        }
+
+        for file in deleted_files {
+            if !rename_old_paths.contains(&file.path) {
+                final_deleted_files.push(file);
+            }
+        }
+
+        Ok((
+            final_new_files,
+            changed_files,
+            final_deleted_files,
+            potential_renames,
+        ))
+    }
+
+    /// Find potential renames based on file metadata (size and creation time) without checksums
+    fn find_potential_renames_by_metadata(
+        &self,
+        deleted_files: &[FileInfo],
+        new_files: &[&FileInfo],
+    ) -> Vec<(FileInfo, FileInfo)> {
+        fn creation_time_secs(file: &FileInfo) -> Option<u64> {
+            file.created
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs())
+        }
+
+        fn group_by_key<'a>(
+            files: impl Iterator<Item = &'a FileInfo>,
+        ) -> HashMap<(u64, Option<u64>), Vec<&'a FileInfo>> {
+            let mut map: HashMap<(u64, Option<u64>), Vec<&'a FileInfo>> = HashMap::new();
+            for file in files {
+                let key = (file.size, creation_time_secs(file));
+                map.entry(key).or_default().push(file);
+            }
+            map
+        }
+
+        let deleted_by_key = group_by_key(deleted_files.iter());
+        let new_by_key = group_by_key(new_files.iter().copied());
+
+        let mut renames = Vec::new();
+
+        for (key, deleted_group) in deleted_by_key {
+            if let Some(new_group) = new_by_key.get(&key) {
+                for deleted in &deleted_group {
+                    let mut new_clone = (*new_group[0]).clone();
+                    new_clone.b3sum = None;
+                    let deleted_clone = (*deleted).clone();
+                    renames.push((deleted_clone, new_clone));
+                }
+            }
+        }
+
+        renames
+    }
+
+    /// Calculate checksums for a list of files
+    async fn calculate_checksums_for_files(&self, files: &[&FileInfo]) -> Result<Vec<FileInfo>> {
+        let mut files_with_checksums = Vec::new();
+
+        for file in files {
+            if file.b3sum.is_some() {
+                files_with_checksums.push((*file).clone());
+                continue;
+            }
+            let checksum = self.checksum_calculator.calculate_checksum(&file.path)?;
+            let mut file_with_checksum = (*file).clone();
+            file_with_checksum.b3sum = Some(checksum);
+            files_with_checksums.push(file_with_checksum);
+        }
+
+        Ok(files_with_checksums)
     }
 
     /// Calculate checksum for a single file

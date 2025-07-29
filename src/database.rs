@@ -1,9 +1,16 @@
-use crate::{DdriveError, Result, scanner::FileInfo};
+use crate::{
+    DdriveError, Result,
+    scanner::{FileInfo, get_all_files},
+};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, QueryBuilder, SqlitePool};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, UNIX_EPOCH},
+};
 use strum::{Display, EnumString};
+use tracing::info;
 
 /// Action types for history tracking
 #[derive(
@@ -17,6 +24,7 @@ pub enum ActionType {
     Add = 1,
     Delete = 2,
     Update = 3,
+    Rename = 4,
 }
 
 impl ActionType {
@@ -31,6 +39,7 @@ impl From<i64> for ActionType {
             1 => Self::Add,
             2 => Self::Delete,
             3 => Self::Update,
+            4 => Self::Rename,
             _ => Self::Unknown,
         }
     }
@@ -58,43 +67,25 @@ impl Database {
         Ok(Database { pool, repo_root })
     }
 
-    /// Insert a new file record with created_at timestamp and relative path
-    pub async fn insert_file_record(
-        &self,
-        file_path: &str,
-        b3sum: &str,
-        file_size: i64,
-    ) -> Result<()> {
-        let relative_path = self.convert_to_relative_path(file_path)?;
-
-        sqlx::query!(
-            r#"
-            INSERT INTO files (path, b3sum, size, created_at, updated_at)
-            VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            "#,
-            relative_path,
-            b3sum,
-            file_size
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
     /// Insert multiple file records in a single transaction for better performance
     pub async fn batch_insert_file_records(
         &self,
         action_id: i64,
-        records: &[&(String, String, i64)], // (file_path, b3sum, file_size)
+        records: &[&crate::scanner::FileInfo],
     ) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
 
         let mut tx = self.pool.begin().await?;
-        for (file_path, b3sum, file_size) in records {
-            let relative_path = self.convert_to_relative_path(file_path)?;
+        for file_info in records {
+            let relative_path = self.convert_to_relative_path(&file_info.path.to_string_lossy())?;
+            let b3sum = file_info.b3sum.as_ref().expect("b3sum should be present");
+            let file_size = file_info.size as i64;
+
+            // Convert creation time to NaiveDateTime
+            let created_at = file_info.created_at();
+            let modified_at = file_info.modified_at();
 
             // Insert into history for tracking
             sqlx::query(
@@ -115,12 +106,14 @@ impl Database {
             sqlx::query(
                 r#"
                 INSERT INTO files (path, b3sum, size, created_at, updated_at)
-                VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?1, ?2, ?3, ?4, ?5)
                 "#,
             )
             .bind(&relative_path)
             .bind(b3sum)
             .bind(file_size)
+            .bind(created_at)
+            .bind(modified_at)
             .execute(&mut *tx)
             .await?;
         }
@@ -159,16 +152,22 @@ impl Database {
             .execute(&mut *tx)
             .await?;
 
+            let updated_at = file.modified_at();
+
             // Update files table
             sqlx::query(
                 r#"
                 UPDATE files 
-                SET b3sum = ?1, size = ?2, updated_at = CURRENT_TIMESTAMP, last_checked = NULL
-                WHERE path = ?3
+                SET b3sum = ?1, 
+                    size = ?2, 
+                    updated_at = ?3, 
+                    last_checked = NULL
+                WHERE path = ?4
                 "#,
             )
             .bind(b3sum)
             .bind(file.size as i64)
+            .bind(updated_at)
             .bind(relative_path)
             .execute(&mut *tx)
             .await?;
@@ -214,6 +213,78 @@ impl Database {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Get all checksums referenced in the database (both files and history tables)
+    pub async fn get_all_referenced_checksums(&self) -> Result<std::collections::HashSet<String>> {
+        let mut checksums = std::collections::HashSet::new();
+
+        // Get checksums from active files
+        let active_checksums = sqlx::query!(
+            r#"
+            SELECT DISTINCT b3sum
+            FROM files
+            WHERE b3sum IS NOT NULL
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for record in active_checksums {
+            checksums.insert(record.b3sum);
+        }
+
+        // Get checksums from history (to preserve deleted files)
+        let history_checksums = sqlx::query!(
+            r#"
+            SELECT DISTINCT b3sum
+            FROM history
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for record in history_checksums {
+            checksums.insert(record.b3sum);
+        }
+
+        Ok(checksums)
+    }
+
+    /// Clean up orphaned objects from the object store
+    pub async fn cleanup_orphaned_objects(&self) -> Result<usize> {
+        let referenced_checksums = self.get_all_referenced_checksums().await?;
+        let objects_dir = self.repo_root.join(".ddrive").join("objects");
+
+        if !objects_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut deleted_count = 0;
+
+        // Walk through the object store directory structure
+        let files = get_all_files(&self.repo_root, &objects_dir, true, false)?;
+
+        info!("Active objects: {}", referenced_checksums.len());
+        info!("Available objects: {}", files.len());
+
+        for file in files {
+            let checksum = file
+                .path
+                .file_name()
+                .expect("filename")
+                .to_str()
+                .expect("filename");
+
+            if referenced_checksums.contains(checksum) {
+                continue;
+            }
+            deleted_count += 1;
+            std::fs::remove_file(&file.path)?;
+            info!("Deleted orphaned object: {}", file.path.display());
+        }
+
+        Ok(deleted_count)
     }
 
     /// Get a file record by path
@@ -563,6 +634,123 @@ impl Database {
         Ok(result.rows_affected() as usize)
     }
 
+    /// Find potential renames by matching deleted files with new files by checksum and size
+    pub async fn find_potential_renames(
+        &self,
+        deleted_files: &[FileInfo],
+        new_files: &[FileInfo],
+    ) -> Result<Vec<(FileInfo, FileInfo)>> {
+        let mut potential_renames = Vec::new();
+
+        // Create lookup maps for efficient matching
+        let mut deleted_by_checksum: std::collections::HashMap<String, Vec<&FileInfo>> =
+            std::collections::HashMap::new();
+        let mut new_by_checksum: std::collections::HashMap<String, Vec<&FileInfo>> =
+            std::collections::HashMap::new();
+
+        // Group deleted files by checksum (if available)
+        for file in deleted_files {
+            if let Some(ref checksum) = file.b3sum {
+                deleted_by_checksum
+                    .entry(checksum.clone())
+                    .or_default()
+                    .push(file);
+            }
+        }
+
+        // Group new files by checksum (if available)
+        for file in new_files {
+            if let Some(ref checksum) = file.b3sum {
+                new_by_checksum
+                    .entry(checksum.clone())
+                    .or_default()
+                    .push(file);
+            }
+        }
+
+        // Find matches by checksum and size
+        for (checksum, deleted_list) in deleted_by_checksum {
+            if let Some(new_list) = new_by_checksum.get(&checksum) {
+                // Match files with same checksum and size
+                for deleted_file in deleted_list {
+                    for new_file in new_list {
+                        if deleted_file.size == new_file.size {
+                            potential_renames.push(((*deleted_file).clone(), (*new_file).clone()));
+                            break; // Only match each deleted file once
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(potential_renames)
+    }
+
+    /// Process file renames in batch
+    pub async fn batch_rename_files(
+        &self,
+        action_id: i64,
+        renames: &[(String, String)], // (old_path, new_path)
+    ) -> Result<()> {
+        if renames.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        for (old_path, new_path) in renames {
+            let old_relative_path = self.convert_to_relative_path(old_path)?;
+            let new_relative_path = self.convert_to_relative_path(new_path)?;
+
+            // Get the file record to preserve checksum and size
+            let file_record = sqlx::query!(
+                "SELECT b3sum, size FROM files WHERE path = ?1",
+                old_relative_path
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some(record) = file_record {
+                // Insert rename history entry with metadata containing old path
+                let metadata = serde_json::json!({
+                    "old_path": old_relative_path
+                });
+                let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO history (action_id, action_type, path, b3sum, size, metadata)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    "#,
+                )
+                .bind(action_id)
+                .bind(ActionType::Rename.to_i32())
+                .bind(&new_relative_path)
+                .bind(&record.b3sum)
+                .bind(record.size)
+                .bind(&metadata_str)
+                .execute(&mut *tx)
+                .await?;
+
+                // Update the file record with new path
+                sqlx::query(
+                    r#"
+                    UPDATE files 
+                    SET path = ?1, updated_at = CURRENT_TIMESTAMP
+                    WHERE path = ?2
+                    "#,
+                )
+                .bind(&new_relative_path)
+                .bind(&old_relative_path)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Convert an absolute path to a path relative to the repository root
     fn convert_to_relative_path(&self, file_path: &str) -> Result<String> {
         let path = Path::new(file_path);
@@ -602,7 +790,10 @@ impl From<&FileRecord> for crate::scanner::FileInfo {
         Self {
             path: std::path::PathBuf::from(&record.path),
             size: record.size as u64,
-            modified: std::time::SystemTime::UNIX_EPOCH,
+            modified: UNIX_EPOCH
+                + Duration::from_secs(record.updated_at.and_utc().timestamp() as u64),
+            created: UNIX_EPOCH
+                + Duration::from_secs(record.created_at.and_utc().timestamp() as u64),
             b3sum: Some(record.b3sum.clone()),
         }
     }

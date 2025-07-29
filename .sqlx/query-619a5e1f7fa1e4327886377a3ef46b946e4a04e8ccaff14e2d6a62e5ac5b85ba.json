@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT b3sum, size FROM files WHERE path = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "b3sum",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "size",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "619a5e1f7fa1e4327886377a3ef46b946e4a04e8ccaff14e2d6a62e5ac5b85ba"
+}
