@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT DISTINCT b3sum\n            FROM history\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "b3sum",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7c9aab1e024e5d2a4881cd86d76f0f94bea656b42ac4c55a601495fcf9560595"
+}

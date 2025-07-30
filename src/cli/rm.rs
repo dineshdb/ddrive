@@ -57,10 +57,11 @@ impl<'a> RmCommand<'a> {
         let tracked_files = self.context.database.get_all_files().await?;
         let files = scanner.get_all_files(repo_root)?;
 
-        let (_, _, deleted_files) = processor
-            .detect_changes(&files, tracked_files.as_slice())
+        let (_, _, deleted_files, _) = processor
+            .detect_changes(&files, tracked_files.as_slice(), false)
             .await?;
 
+        info!("found {} deleted files", deleted_files.len());
         let deleted_files: Vec<_> = deleted_files
             .iter()
             .filter(|f| pattern.is_none_or(|p| p.matches_path(f.path.as_path())))
@@ -94,6 +95,7 @@ impl<'a> RmCommand<'a> {
             .database
             .batch_delete_file_records(action_id, deleted_file_records.as_slice())
             .await?;
+
         info!(
             "Removed {} deleted files from tracking",
             deleted_file_records.len()

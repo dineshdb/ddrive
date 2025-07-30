@@ -2,7 +2,7 @@ use crate::{AppContext, Result, database::FileRecord, utils};
 use glob::Pattern;
 use reflink_copy;
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{debug, error, info};
 
 pub struct DedupCommand<'a> {
     context: &'a AppContext,
@@ -168,7 +168,7 @@ impl<'a> DedupCommand<'a> {
         for (i, group) in duplicates.iter().enumerate() {
             // Always keep the first file and replace others with reflinks
             let file_to_keep = &group.files[0];
-            println!(
+            debug!(
                 "Processing duplicate group {} of {} ({}). Keeping: {}",
                 i + 1,
                 duplicates.len(),
@@ -186,25 +186,25 @@ impl<'a> DedupCommand<'a> {
 
             // Process each file except the one we're keeping
             for other_file in group.files.iter().skip(1) {
-                println!("Replacing {other_file} with reflink to {file_to_keep}");
+                debug!("Replacing {other_file} with reflink to {file_to_keep}");
 
                 // Delete the file first
                 if let Err(e) = std::fs::remove_file(other_file) {
-                    println!("Error removing file {other_file}: {e}");
+                    error!("Error removing file {other_file}: {e}");
                     continue;
                 }
 
                 // Create reflink copy
                 if let Err(e) = reflink_copy::reflink_or_copy(file_to_keep, other_file) {
-                    println!("Error creating reflink: {e}",);
+                    error!("Error creating reflink: {e}",);
                 }
             }
         }
 
         if let Some(filter) = &self.path_filter {
-            println!("\nDeduplication process completed for files matching: {filter}");
+            info!("\nDeduplication process completed for files matching: {filter}");
         } else {
-            println!("\nDeduplication process completed.");
+            info!("\nDeduplication process completed.");
         }
         Ok(())
     }

@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 pub struct AddResult {
     pub new_files: usize,
     pub changed_files: usize,
+    pub renamed_files: usize,
 }
 
 pub struct AddCommand<'a> {
@@ -65,6 +66,7 @@ impl<'a> AddCommand<'a> {
             return Ok(AddResult {
                 new_files: 0,
                 changed_files: 0,
+                renamed_files: 0,
             });
         }
 
@@ -78,17 +80,25 @@ impl<'a> AddCommand<'a> {
                 .filter(|f| f.path.starts_with(path))
                 .collect()
         };
-        let (new_files, changed_files, deleted_files) = self
+        let (new_files, changed_files, deleted_files, renames) = self
             .processor
-            .detect_changes(&files, tracked_files.as_slice())
+            .detect_changes(&files, tracked_files.as_slice(), true)
             .await?;
 
-        self.display_summary(&changed_files, deleted_files.as_slice());
+        self.display_summary(&changed_files, deleted_files.as_slice(), &renames);
 
         let action_id = chrono::Utc::now().timestamp();
+
+        // Process renames first (most efficient)
+        if !renames.is_empty() {
+            info!("Processing {} file renames...", renames.len());
+            self.process_renames(action_id, &renames).await?;
+        }
+
         if !new_files.is_empty() {
             info!("Processing {} new files...", new_files.len());
-            self.process_new_files(action_id, &new_files).await?;
+            let new_files_refs: Vec<_> = new_files.iter().collect();
+            self.process_new_files(action_id, &new_files_refs).await?;
         }
 
         // Process changed files
@@ -98,14 +108,43 @@ impl<'a> AddCommand<'a> {
             self.process_changed_files(action_id, &changed_files)
                 .await?;
         }
+
         Ok(AddResult {
             new_files: new_files.len(),
             changed_files: changed_files.len(),
+            renamed_files: renames.len(),
         })
     }
 
     /// Display summary of files to be processed
-    fn display_summary(&self, changed_files: &[FileInfo], deleted_files: &[FileInfo]) {
+    fn display_summary(
+        &self,
+        changed_files: &[FileInfo],
+        deleted_files: &[FileInfo],
+        renames: &[(FileInfo, FileInfo)],
+    ) {
+        // Display renames
+        if !renames.is_empty() && renames.len() <= 5 {
+            info!("Renamed files:");
+            for (old_file, new_file) in renames {
+                info!(
+                    "  {} → {}",
+                    old_file.path.display(),
+                    new_file.path.display()
+                );
+            }
+        } else if renames.len() > 5 {
+            info!("Renamed files (showing 5 out of {}):", renames.len());
+            for (old_file, new_file) in renames.iter().take(5) {
+                info!(
+                    "  {} → {}",
+                    old_file.path.display(),
+                    new_file.path.display()
+                );
+            }
+            info!("  ... and {} more", renames.len() - 5);
+        }
+
         if !changed_files.is_empty() && changed_files.len() <= 5 {
             info!("Changed files:");
             for file in changed_files {
@@ -135,23 +174,43 @@ impl<'a> AddCommand<'a> {
 
     /// Process new files by calculating checksums, inserting records, and copying to object store
     async fn process_new_files(&self, action_id: i64, files: &[&FileInfo]) -> Result<usize> {
-        let checksums = self.processor.calculate_checksums_parallel(files);
-
+        // Calculate checksums and create FileInfo objects with checksums
+        let mut files_with_checksums = Vec::new();
         let mut failed_count = 0;
-        for (file_info, checksum) in files.iter().zip(checksums.iter()) {
-            if let Err(e) = self.copy_to_object_store(&file_info.path, &checksum.1) {
-                warn!(
-                    "Failed to copy {} to object store: {}",
-                    file_info.path.display(),
-                    e
-                );
-                failed_count += 1;
-                continue;
-            }
 
+        for file_info in files {
+            match self.processor.calculate_single_checksum(&file_info.path) {
+                Ok(checksum) => {
+                    if let Err(e) = self.copy_to_object_store(&file_info.path, &checksum) {
+                        warn!(
+                            "Failed to copy {} to object store: {}",
+                            file_info.path.display(),
+                            e
+                        );
+                        failed_count += 1;
+                        continue;
+                    }
+
+                    let mut file_with_checksum = (*file_info).clone();
+                    file_with_checksum.b3sum = Some(checksum);
+                    files_with_checksums.push(file_with_checksum);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to calculate checksum for {}: {}",
+                        file_info.path.display(),
+                        e
+                    );
+                    failed_count += 1;
+                }
+            }
+        }
+
+        if !files_with_checksums.is_empty() {
+            let file_refs: Vec<&FileInfo> = files_with_checksums.iter().collect();
             self.context
                 .database
-                .batch_insert_file_records(action_id, &[checksum])
+                .batch_insert_file_records(action_id, &file_refs)
                 .await?;
         }
 
@@ -202,6 +261,32 @@ impl<'a> AddCommand<'a> {
         }
 
         reflink_copy::reflink_or_copy(file_path, object_path)?;
+        Ok(())
+    }
+
+    /// Process file renames efficiently without recalculating checksums or copying files
+    async fn process_renames(
+        &self,
+        action_id: i64,
+        renames: &[(FileInfo, FileInfo)],
+    ) -> Result<()> {
+        let rename_pairs: Vec<(String, String)> = renames
+            .iter()
+            .map(|(old_file, new_file)| {
+                (
+                    old_file.path.to_string_lossy().into_owned(),
+                    new_file.path.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+
+        // For renames, we don't need to copy files to object store since the content is the same
+        // and the object already exists from when the file was originally added
+        self.context
+            .database
+            .batch_rename_files(action_id, &rename_pairs)
+            .await?;
+
         Ok(())
     }
 }

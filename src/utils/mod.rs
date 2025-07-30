@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
+use std::{collections::HashSet, time::UNIX_EPOCH};
 use tracing::{debug, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -8,12 +9,6 @@ use crate::{
     AppContext, Result, checksum::ChecksumCalculator, database::FileRecord, scanner::FileInfo,
 };
 use rayon::prelude::*;
-
-/// Result of batch database operations
-#[derive(Debug)]
-pub struct BatchResult {
-    pub success_count: usize,
-}
 
 /// Shared utilities for file processing operations
 pub struct FileProcessor<'a> {
@@ -29,13 +24,28 @@ impl<'a> FileProcessor<'a> {
         }
     }
 
-    /// Process files in parallel for checksum calculation
+    /// Process files in parallel for checksum calculation, reusing existing checksums
     pub fn calculate_checksums_parallel(&self, files: &[&FileInfo]) -> Vec<(String, String, i64)> {
         let start_time = Instant::now();
 
-        let results: Vec<_> = files
+        // Separate files that need calculation from those with existing checksums
+        let (files_with_checksums, files_needing_calculation): (Vec<_>, Vec<_>) =
+            files.iter().partition(|file| file.b3sum.is_some());
+
+        // Process files with existing checksums (no calculation needed)
+        let mut results: Vec<_> = files_with_checksums
+            .into_iter()
+            .map(|file: &FileInfo| {
+                let file_path_str = file.path.to_string_lossy().into_owned();
+                let checksum = file.b3sum.as_ref().unwrap().clone();
+                (file_path_str, checksum, file.size as i64)
+            })
+            .collect();
+
+        // Calculate checksums for remaining files in parallel
+        let calculated_results: Vec<_> = files_needing_calculation
             .par_iter()
-            .map(
+            .filter_map(
                 |file| match self.checksum_calculator.calculate_checksum(&file.path) {
                     Ok(checksum) => {
                         let file_path_str = file.path.to_string_lossy().into_owned();
@@ -47,49 +57,61 @@ impl<'a> FileProcessor<'a> {
                     }
                 },
             )
-            .filter_map(|result| result)
             .collect();
 
+        results.extend(calculated_results);
+
+        let reused_count = results.len() - files_needing_calculation.len();
         debug!(
-            "Calculated {} checksums in {:.2}ms",
+            "Processed {} checksums ({} calculated, {} reused) in {:.2}ms",
             results.len(),
+            files_needing_calculation.len(),
+            reused_count,
             start_time.elapsed().as_millis()
         );
         results
     }
 
-    /// Check if files have changed (optimized batch operation)
-    pub async fn detect_changes<'b>(
+    /// Internal method that handles both lightweight and full change detection
+    pub async fn detect_changes(
         &self,
-        scanned_files: &'b [FileInfo],
+        scanned_files: &[FileInfo],
         tracked_files: &[FileRecord],
-    ) -> Result<(Vec<&'b FileInfo>, Vec<FileInfo>, Vec<FileInfo>)> {
+        use_checksums: bool,
+    ) -> Result<(
+        Vec<FileInfo>,
+        Vec<FileInfo>,
+        Vec<FileInfo>,
+        Vec<(FileInfo, FileInfo)>,
+    )> {
         let mut new_files = Vec::new();
         let mut changed_files = Vec::new();
         let mut deleted_files = Vec::new();
 
-        // Build a hash set of scanned paths for quick lookups
-        let mut scanned_paths = HashSet::new();
-        for file_info in scanned_files {
-            scanned_paths.insert(file_info.path.clone());
-        }
+        // Build a hash map of scanned paths for quick lookups (avoid cloning paths)
+        let scanned_paths: HashMap<&PathBuf, &FileInfo> = scanned_files
+            .iter()
+            .map(|file| (&file.path, file))
+            .collect();
 
+        // Find deleted files (avoid creating PathBuf for each lookup)
         for tracked_file in tracked_files {
             let tracked_path = PathBuf::from(&tracked_file.path);
-            if !scanned_paths.contains(&tracked_path) {
+            if !scanned_paths.contains_key(&tracked_path) {
                 deleted_files.push(tracked_file.into());
             }
         }
 
-        // Process scanned files
+        // Create a lookup map from tracked files for O(1) access (avoid database calls)
+        let tracked_lookup: HashMap<&str, &FileRecord> = tracked_files
+            .iter()
+            .map(|record| (record.path.as_str(), record))
+            .collect();
+
+        // Process scanned files using the lookup map
         for file in scanned_files {
-            let file_path_str = file.path.to_string_lossy().into_owned();
-            match self
-                .context
-                .database
-                .get_file_by_path(&file_path_str)
-                .await?
-            {
+            let file_path_str = file.path.to_string_lossy();
+            match tracked_lookup.get(file_path_str.as_ref()) {
                 Some(record) => {
                     let modified_time = file
                         .modified
@@ -98,27 +120,146 @@ impl<'a> FileProcessor<'a> {
                             message: format!("Invalid modification time: {e:?}"),
                         })?
                         .as_secs();
+
+                    // Skip if size and time haven't changed
                     if file.size == record.size as u64
                         && modified_time <= record.updated_at.and_utc().timestamp() as u64
                     {
                         continue;
                     }
 
-                    let current_checksum =
-                        self.checksum_calculator.calculate_checksum(&file.path)?;
-                    if current_checksum != record.b3sum {
-                        let mut file = file.clone();
-                        file.b3sum = Some(current_checksum);
-                        changed_files.push(file);
+                    if use_checksums {
+                        // Reuse existing checksum if available, otherwise calculate
+                        let current_checksum = if let Some(ref existing_checksum) = file.b3sum {
+                            existing_checksum.clone()
+                        } else {
+                            self.checksum_calculator.calculate_checksum(&file.path)?
+                        };
+
+                        if current_checksum != record.b3sum {
+                            let mut changed_file = file.clone();
+                            changed_file.b3sum = Some(current_checksum);
+                            changed_files.push(changed_file);
+                        }
+                    } else {
+                        // For lightweight mode, assume file changed if size/time differs
+                        let mut changed_file = file.clone();
+                        changed_file.b3sum = None;
+                        changed_files.push(changed_file);
                     }
                 }
                 None => {
-                    new_files.push(file);
+                    new_files.push(file.clone());
                 }
             }
         }
 
-        Ok((new_files, changed_files, deleted_files))
+        // Detect potential renames based on metadata
+        let potential_renames = if use_checksums {
+            // Full rename detection with checksums
+            let new_files_with_checksums = self.ensure_checksums_for_files(&new_files).await?;
+            self.context
+                .database
+                .find_potential_renames(&deleted_files, &new_files_with_checksums)
+                .await?
+        } else {
+            // Lightweight rename detection based on size and modification time
+            self.find_potential_renames_by_metadata(&deleted_files, &new_files)
+        };
+
+        // Remove renamed files from new_files and deleted_files lists
+        let rename_new_paths: HashSet<_> = potential_renames
+            .iter()
+            .map(|(_, new_file)| &new_file.path)
+            .collect();
+        let rename_old_paths: HashSet<_> = potential_renames
+            .iter()
+            .map(|(old_file, _)| &old_file.path)
+            .collect();
+
+        // Filter out files involved in renames
+        new_files.retain(|f| !rename_new_paths.contains(&f.path));
+        deleted_files.retain(|f| !rename_old_paths.contains(&f.path));
+
+        Ok((new_files, changed_files, deleted_files, potential_renames))
+    }
+
+    /// Find potential renames based on file metadata (size and creation time) without checksums
+    fn find_potential_renames_by_metadata(
+        &self,
+        deleted_files: &[FileInfo],
+        new_files: &[FileInfo],
+    ) -> Vec<(FileInfo, FileInfo)> {
+        fn creation_time_secs(file: &FileInfo) -> Option<u64> {
+            file.created
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs())
+        }
+
+        fn group_by_key(files: &[FileInfo]) -> HashMap<(u64, Option<u64>), Vec<&FileInfo>> {
+            let mut map: HashMap<(u64, Option<u64>), Vec<&FileInfo>> = HashMap::new();
+            for file in files {
+                let key = (file.size, creation_time_secs(file));
+                map.entry(key).or_default().push(file);
+            }
+            map
+        }
+
+        let deleted_by_key = group_by_key(deleted_files);
+        let new_by_key = group_by_key(new_files);
+
+        let mut renames = Vec::new();
+
+        for (key, deleted_group) in deleted_by_key {
+            if let Some(new_group) = new_by_key.get(&key) {
+                // Match first deleted with first new file of same metadata
+                if let (Some(&deleted), Some(&new)) = (deleted_group.first(), new_group.first()) {
+                    let mut new_file = new.clone();
+                    new_file.b3sum = None; // Clear checksum for lightweight mode
+                    renames.push((deleted.clone(), new_file));
+                }
+            }
+        }
+
+        renames
+    }
+
+    /// Ensure checksums are present for a list of files, reusing existing ones
+    async fn ensure_checksums_for_files(&self, files: &[FileInfo]) -> Result<Vec<FileInfo>> {
+        // Separate files that already have checksums from those that need calculation
+        let (files_with_checksums, files_needing_checksums): (Vec<_>, Vec<_>) =
+            files.iter().partition(|file| file.b3sum.is_some());
+
+        let mut result = Vec::with_capacity(files.len());
+
+        // Add files that already have checksums (no cloning needed for checksum calculation)
+        result.extend(files_with_checksums.into_iter().cloned());
+
+        // Calculate checksums for remaining files
+        // Use parallel processing if we have many files to process
+        if files_needing_checksums.len() > 10 {
+            let calculated_files: Result<Vec<_>> = files_needing_checksums
+                .par_iter()
+                .map(|file| {
+                    let checksum = self.checksum_calculator.calculate_checksum(&file.path)?;
+                    let mut file_with_checksum = (*file).clone();
+                    file_with_checksum.b3sum = Some(checksum);
+                    Ok(file_with_checksum)
+                })
+                .collect();
+            result.extend(calculated_files?);
+        } else {
+            // Sequential processing for small numbers of files
+            for file in files_needing_checksums {
+                let checksum = self.checksum_calculator.calculate_checksum(&file.path)?;
+                let mut file_with_checksum = file.clone();
+                file_with_checksum.b3sum = Some(checksum);
+                result.push(file_with_checksum);
+            }
+        }
+
+        Ok(result)
     }
 
     /// Calculate checksum for a single file

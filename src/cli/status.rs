@@ -1,6 +1,5 @@
 use crate::{
     AppContext, Result,
-    scanner::FileScanner,
     utils::{display_directory_listing, format_size, group_files_by_directory},
 };
 use std::collections::HashMap;
@@ -23,6 +22,8 @@ pub struct RepositoryStats {
     pub newest_tracked: Option<chrono::NaiveDateTime>,
     pub new_files: Vec<String>,
     pub deleted_files: Vec<String>,
+    pub renamed_files: Vec<(String, String)>, // (old_path, new_path)
+    pub updated_files: Vec<String>, // Files with metadata changes (size/modification time)
 }
 
 impl<'a> StatusCommand<'a> {
@@ -45,17 +46,48 @@ impl<'a> StatusCommand<'a> {
         let files_needing_check = self.context.database.get_files_for_check().await?.len();
 
         // Get all file paths from the filesystem (lightweight scan)
-        let scanner = FileScanner::new(self.context.repo.root().clone());
-        let all_file_paths: Vec<_> = scanner
-            .get_all_files(self.context.repo.root())?
+        let scanner = crate::scanner::FileScanner::new(self.context.repo.root().clone());
+        let all_files = scanner.get_all_files(self.context.repo.root())?;
+
+        // Get full tracked file records for change detection
+        let tracked_file_records = self.context.database.get_all_files().await?;
+
+        // Use lightweight change detection to find new, deleted, and renamed files
+        let processor = crate::utils::FileProcessor::new(self.context);
+        let (new_files, changed_files, deleted_files, renames) = processor
+            .detect_changes(&all_files, &tracked_file_records, false)
+            .await?;
+
+        // Convert to string paths for display
+        let new_files_paths: Vec<String> = new_files
             .iter()
-            .map(|f| f.path.clone())
+            .map(|f| f.path.to_string_lossy().into_owned())
             .collect();
 
-        // Compare filesystem and database to find new and deleted files
-        let (new_files, deleted_files, untracked_count, total_untracked_size) = self
-            .compare_file_paths_lightweight(&all_file_paths, &tracked_files)
-            .await?;
+        let deleted_files: Vec<String> = deleted_files
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect();
+
+        let renamed_files: Vec<(String, String)> = renames
+            .iter()
+            .map(|(old, new)| {
+                (
+                    old.path.to_string_lossy().into_owned(),
+                    new.path.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+
+        // Convert changed files to string paths for display
+        let updated_files: Vec<String> = changed_files
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect();
+
+        // Calculate untracked file statistics
+        let untracked_count = new_files.len();
+        let total_untracked_size: u64 = new_files.iter().map(|f| f.size).sum();
 
         // Calculate duplicate statistics
         let (duplicate_groups, duplicate_files, wasted_space) = self.get_duplicate_stats().await?;
@@ -70,8 +102,10 @@ impl<'a> StatusCommand<'a> {
             wasted_space,
             files_needing_check,
             newest_tracked,
-            new_files,
+            new_files: new_files_paths,
             deleted_files,
+            renamed_files,
+            updated_files,
         })
     }
 
@@ -84,64 +118,6 @@ impl<'a> StatusCommand<'a> {
         let newest_tracked = tracked_files.iter().map(|f| f.created_at).max();
 
         (tracked_count, total_tracked_size, newest_tracked)
-    }
-
-    async fn compare_file_paths_lightweight(
-        &self,
-        file_paths: &[std::path::PathBuf],
-        tracked_files: &[crate::database::TrackedFileInfo],
-    ) -> Result<(Vec<String>, Vec<String>, usize, u64)> {
-        let mut new_files = Vec::new();
-        // We don't check for updated files in status command - that's what check is for
-        let mut deleted_files = Vec::new();
-        let mut untracked_count = 0;
-        let mut total_untracked_size = 0u64;
-
-        // Create efficient lookup structures
-        let tracked_paths: std::collections::HashSet<String> =
-            tracked_files.iter().map(|f| f.path.clone()).collect();
-
-        let fs_paths: std::collections::HashSet<String> = file_paths
-            .iter()
-            .map(|path| {
-                path.strip_prefix(self.context.repo.root())
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-
-        // Find new files (in filesystem but not tracked)
-        for file_path in file_paths {
-            let relative_path = file_path
-                .strip_prefix(self.context.repo.root())
-                .unwrap_or(file_path)
-                .to_string_lossy();
-
-            if !tracked_paths.contains(relative_path.as_ref()) {
-                new_files.push(relative_path.into_owned());
-                untracked_count += 1;
-
-                // Only get file size for untracked files to calculate total
-                if let Ok(metadata) = std::fs::metadata(file_path) {
-                    total_untracked_size += metadata.len();
-                }
-            }
-        }
-
-        // Find deleted files (tracked but not in filesystem)
-        for tracked_path in &tracked_paths {
-            if !fs_paths.contains(tracked_path) {
-                deleted_files.push(tracked_path.clone());
-            }
-        }
-
-        Ok((
-            new_files,
-            deleted_files,
-            untracked_count,
-            total_untracked_size,
-        ))
     }
 
     async fn get_duplicate_stats(&self) -> Result<(usize, usize, u64)> {
@@ -174,10 +150,24 @@ impl<'a> StatusCommand<'a> {
     // This method has been moved to utils.rs as a utility function
 
     fn display_status(&self, stats: &RepositoryStats) {
-        info!("Any tracked files that have changed in filesystem are not shown here");
         // Define constants for path display
         const MAX_PATH_LENGTH: usize = 50; // Maximum length for displayed paths
         const MAX_SAMPLES: usize = 3; // Maximum number of sample files to show per directory
+
+        // Updated files section (metadata changes only)
+        if !stats.updated_files.is_empty() {
+            info!("Files with metadata changes (size/modification time):");
+
+            // Group files by directory using the utility function
+            let grouped_files = group_files_by_directory(&stats.updated_files);
+
+            // Display directory listing using the utility function
+            for line in display_directory_listing(&grouped_files, MAX_PATH_LENGTH, MAX_SAMPLES) {
+                info!("{}", line);
+            }
+            info!("  Run 'ddrive verify' to check if content has actually changed");
+            info!("");
+        }
 
         // New files summary by directory
         if !stats.new_files.is_empty() {
@@ -193,7 +183,22 @@ impl<'a> StatusCommand<'a> {
             info!("");
         }
 
-        // Make it clear that check command should be used to verify file changes
+        // Renamed files section
+        if !stats.renamed_files.is_empty() {
+            info!("Potentially renamed files:");
+            let display_count = std::cmp::min(stats.renamed_files.len(), MAX_SAMPLES);
+            for (old_path, new_path) in stats.renamed_files.iter().take(display_count) {
+                info!("  {} → {}", old_path, new_path);
+            }
+            if stats.renamed_files.len() > display_count {
+                info!(
+                    "  ... and {} more",
+                    stats.renamed_files.len() - display_count
+                );
+            }
+            info!("  Run 'ddrive add <path>' to confirm these renames");
+            info!("");
+        }
 
         // Deleted files with more friendly wording
         if !stats.deleted_files.is_empty() {
