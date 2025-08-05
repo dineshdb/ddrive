@@ -561,3 +561,6 @@ pub fn display_directory_listing(
 
     output
 }
+
+#[cfg(test)]
+mod tests;
